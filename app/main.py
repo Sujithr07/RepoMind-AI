@@ -11,8 +11,10 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from app.query.retriever import retrieve
+from app.query.hyde import generate_hyde
 from app.query.answerer import stream_answer
 from app.workers.tasks import index_repo_task
+from app.utils.tracing import get_langfuse
 
 load_dotenv()
 
@@ -109,23 +111,80 @@ async def query_repo(body: QueryRequest):
         raise HTTPException(status_code=400, detail=f"Repo status is '{row['status']}' — wait for indexing to finish")
     
     async def token_stream():
-        async with db_pool.acquire() as conn:
-            # We need to pass a UUID object to retrieve as it expects uuid.UUID or we fix retriever.py
-            real_repo_id = uuid.UUID(body.repo_id)
-            chunks = await retrieve(
-                body.question,
-                real_repo_id,
-                conn,
-                redis_pool
-            )
+        langfuse = None
+        trace = None
+        
+        try:
+            langfuse = get_langfuse()
+            trace = langfuse.trace(name="rag-query", input={"question": body.question, "repo_id": body.repo_id})
+        except Exception as e:
+            print(f"Langfuse initialization failed: {e}")
+        
+        try:
+            # HyDE span
+            hyde_result = None
+            if trace:
+                hyde_span = trace.span(name="hyde")
+            try:
+                hyde_result = await generate_hyde(body.question)
+                if trace:
+                    hyde_span.end(output={"snippet": hyde_result})
+            except Exception as e:
+                if trace:
+                    hyde_span.end(output={"error": str(e)})
+                raise
             
-            if not chunks:
-                yield "data: No relevant code found for the question.\n\n"
-                return
-            
-            async for token in stream_answer(body.question, chunks):
-                yield f"data: {token}\n\n"
-            yield "data: [DONE]\n\n"
+            async with db_pool.acquire() as conn:
+                # Retrieve span
+                chunks = []
+                if trace:
+                    retrieve_span = trace.span(name="retrieve")
+                try:
+                    real_repo_id = uuid.UUID(body.repo_id)
+                    chunks = await retrieve(
+                        body.question,
+                        real_repo_id,
+                        conn,
+                        redis_pool
+                    )
+                    if trace:
+                        retrieve_span.end(output={"chunks": len(chunks)})
+                except Exception as e:
+                    if trace:
+                        retrieve_span.end(output={"error": str(e)})
+                    raise
+                
+                if not chunks:
+                    yield "data: No relevant code found for the question.\n\n"
+                    if trace:
+                        trace.update(output={"answer": "No relevant code found"})
+                    return
+                
+                # Answer generation span
+                final_answer = ""
+                if trace:
+                    answer_span = trace.span(name="answer", model="llama-3.3-70b-versatile")
+                try:
+                    async for token in stream_answer(body.question, chunks):
+                        final_answer += token
+                        yield f"data: {token}\n\n"
+                    yield "data: [DONE]\n\n"
+                    if trace:
+                        answer_span.end(output={"answer_length": len(final_answer)})
+                        trace.update(output={"answer": final_answer})
+                except Exception as e:
+                    if trace:
+                        answer_span.end(output={"error": str(e)})
+                    raise
+        except Exception as e:
+            print(f"Error in query pipeline: {e}")
+            raise
+        finally:
+            try:
+                if langfuse:
+                    langfuse.flush()
+            except Exception as e:
+                print(f"Langfuse flush failed: {e}")
 
     return StreamingResponse(token_stream(), media_type="text/event-stream")
 
