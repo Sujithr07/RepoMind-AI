@@ -10,9 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from app.query.retriever import retrieve
-from app.query.hyde import generate_hyde
-from app.query.answerer import stream_answer
+from app.query.graph import query_graph
 from app.workers.tasks import index_repo_task
 from app.utils.tracing import get_langfuse
 
@@ -121,61 +119,30 @@ async def query_repo(body: QueryRequest):
             print(f"Langfuse initialization failed: {e}")
         
         try:
-            # HyDE span
-            hyde_result = None
-            if trace:
-                hyde_span = trace.span(name="hyde")
-            try:
-                hyde_result = await generate_hyde(body.question)
-                if trace:
-                    hyde_span.end(output={"snippet": hyde_result})
-            except Exception as e:
-                if trace:
-                    hyde_span.end(output={"error": str(e)})
-                raise
-            
             async with db_pool.acquire() as conn:
-                # Retrieve span
-                chunks = []
-                if trace:
-                    retrieve_span = trace.span(name="retrieve")
-                try:
-                    real_repo_id = uuid.UUID(body.repo_id)
-                    chunks = await retrieve(
-                        body.question,
-                        real_repo_id,
-                        conn,
-                        redis_pool
-                    )
-                    if trace:
-                        retrieve_span.end(output={"chunks": len(chunks)})
-                except Exception as e:
-                    if trace:
-                        retrieve_span.end(output={"error": str(e)})
-                    raise
+                # Initialize state for LangGraph
+                initial_state = {
+                    "question": body.question,
+                    "repo_id": body.repo_id,
+                    "hyde_snippet": "",
+                    "chunks": [],
+                    "answer": "",
+                    "retry_count": 0,
+                    "conn": conn,
+                    "redis_client": redis_pool
+                }
                 
-                if not chunks:
-                    yield "data: No relevant code found for the question.\n\n"
-                    if trace:
-                        trace.update(output={"answer": "No relevant code found"})
-                    return
+                # Invoke the LangGraph
+                result = await query_graph.ainvoke(initial_state)
                 
-                # Answer generation span
-                final_answer = ""
+                # Stream the answer
+                final_answer = result.get("answer", "")
+                for token in final_answer:
+                    yield f"data: {token}\n\n"
+                yield "data: [DONE]\n\n"
+                
                 if trace:
-                    answer_span = trace.span(name="answer", model="llama-3.3-70b-versatile")
-                try:
-                    async for token in stream_answer(body.question, chunks):
-                        final_answer += token
-                        yield f"data: {token}\n\n"
-                    yield "data: [DONE]\n\n"
-                    if trace:
-                        answer_span.end(output={"answer_length": len(final_answer)})
-                        trace.update(output={"answer": final_answer})
-                except Exception as e:
-                    if trace:
-                        answer_span.end(output={"error": str(e)})
-                    raise
+                    trace.update(output={"answer": final_answer})
         except Exception as e:
             print(f"Error in query pipeline: {e}")
             raise
