@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from app.query.graph import query_graph
 from app.workers.tasks import index_repo_task
 from app.utils.tracing import get_langfuse
+from app.utils.memory import get_history, save_history
 
 load_dotenv()
 
@@ -57,6 +58,7 @@ class AddRequest(BaseModel):
 class QueryRequest(BaseModel):
     repo_id: str
     question: str
+    session_id: str | None = None
 
 # Endpoints
 @app.post("/repos")
@@ -108,6 +110,12 @@ async def query_repo(body: QueryRequest):
     if row["status"] != "ready":
         raise HTTPException(status_code=400, detail=f"Repo status is '{row['status']}' — wait for indexing to finish")
     
+    # Get or create session_id
+    session_id = body.session_id or str(uuid.uuid4())
+    
+    # Get conversation history
+    history = get_history(session_id)
+    
     async def token_stream():
         langfuse = None
         trace = None
@@ -129,7 +137,8 @@ async def query_repo(body: QueryRequest):
                     "answer": "",
                     "retry_count": 0,
                     "conn": conn,
-                    "redis_client": redis_pool
+                    "redis_client": redis_pool,
+                    "history": history
                 }
                 
                 # Invoke the LangGraph
@@ -137,9 +146,20 @@ async def query_repo(body: QueryRequest):
                 
                 # Stream the answer
                 final_answer = result.get("answer", "")
+                
+                # Include session_id in first SSE event
+                yield f"data: {{\"session_id\": \"{session_id}\"}}\n\n"
+                
                 for token in final_answer:
                     yield f"data: {token}\n\n"
                 yield "data: [DONE]\n\n"
+                
+                # Save updated history
+                updated_history = history + [
+                    {"role": "user", "content": body.question},
+                    {"role": "assistant", "content": final_answer}
+                ]
+                save_history(session_id, updated_history)
                 
                 if trace:
                     trace.update(output={"answer": final_answer})

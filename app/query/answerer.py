@@ -16,7 +16,7 @@ SYSTEM_PROMPT = (
     "If the answer is not in the context, say so clearly — do not guess."
 )
 
-async def stream_answer(query: str, chunks: list[dict]) -> AsyncIterator[str]:
+async def stream_answer(query: str, chunks: list[dict], history: list = None) -> AsyncIterator[str]:
     """Stream token-by-token answer from Groq API."""
 
     context = "\n\n---\n\n".join(
@@ -31,13 +31,20 @@ async def stream_answer(query: str, chunks: list[dict]) -> AsyncIterator[str]:
         f"Question: {query}"
     )
 
+    # Build messages array with history prepended
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    
+    # Add conversation history if provided
+    if history:
+        messages.extend(history)
+    
+    # Add current query
+    messages.append({"role": "user", "content": full_prompt})
+
     try:
         stream = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": full_prompt}
-            ],
+            messages=messages,
             temperature=0.1,
             max_tokens=1500,
             stream=True,

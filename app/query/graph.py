@@ -25,6 +25,7 @@ class QueryState(TypedDict):
     retry_count: int
     conn: asyncpg.Connection
     redis_client: object
+    history: list
 
 
 async def hyde_node(state: QueryState) -> dict:
@@ -76,7 +77,7 @@ async def reflect_node(state: QueryState) -> dict:
 async def answer_node(state: QueryState) -> dict:
     """Generate the final answer using the retrieved chunks."""
     result = ""
-    async for token in stream_answer(state["question"], state["chunks"]):
+    async for token in stream_answer(state["question"], state["chunks"], state.get("history")):
         result += token
     return {"answer": result}
 
