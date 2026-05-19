@@ -50,11 +50,14 @@ def do_run_migrations(connection):
 
 
 async def run_async_migrations() -> None:
+    db_url = config.get_main_option("sqlalchemy.url") or ""
+    use_ssl = not ("localhost" in db_url or "127.0.0.1" in db_url)
+
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        connect_args={"ssl": "require"},    # Neon requires this
+        connect_args={"ssl": "require"} if use_ssl else {},
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

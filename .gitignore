@@ -71,3 +71,19 @@ dmypy.json
 
 # Alembic (keep versions, ignore temp files)
 *.pyc
+
+# Local storage
+qdrant_storage/
+
+# Test files
+test_*.py
+run_e2e_test.sh
+test_output.log
+
+# Utility scripts
+clear_repos.py
+
+# Server logs
+frontend.log
+server.log
+worker.log

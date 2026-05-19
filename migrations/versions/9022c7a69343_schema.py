@@ -10,7 +10,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-import pgvector
 
 
 # revision identifiers, used by Alembic.
@@ -50,9 +49,6 @@ def upgrade() -> None:
         sa.Column("end_line", sa.Integer(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("context_prefix", sa.Text(), nullable=False),
-        sa.Column(
-            "embedding", pgvector.sqlalchemy.vector.VECTOR(dim=1536), nullable=True
-        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

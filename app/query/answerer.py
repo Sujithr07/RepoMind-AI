@@ -43,7 +43,7 @@ async def stream_answer(query: str, chunks: list[dict], history: list = None) ->
 
     try:
         stream = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=messages,
             temperature=0.1,
             max_tokens=1500,

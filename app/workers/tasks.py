@@ -51,7 +51,8 @@ async def _index_repo(repo_id: str, github_url: str):
     repo_path = None
     try:
         dsn = get_dsn()
-        conn = await asyncpg.connect(dsn=dsn, ssl=True)
+        use_ssl = not ("localhost" in dsn or "127.0.0.1" in dsn)
+        conn = await asyncpg.connect(dsn=dsn, ssl="require" if use_ssl else False)
 
         # Mark as indexing
         await conn.execute(

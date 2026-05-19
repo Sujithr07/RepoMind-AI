@@ -1,3 +1,4 @@
+import asyncio
 import asyncpg
 import voyageai
 import hashlib
@@ -12,6 +13,25 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 load_dotenv()
 
 voyage_client = voyageai.AsyncClient(api_key=os.getenv("VOYAGE_API_KEY"))
+
+
+async def _embed_query(text: str) -> list[float]:
+    """Embed a query string, retrying on Voyage free-tier (3 RPM) rate limits."""
+    delays = [0, 21, 42, 63]
+    last_error = None
+    for delay in delays:
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            result = await voyage_client.embed(
+                [text],
+                model="voyage-code-3",
+                input_type="query",
+            )
+            return result.embeddings[0]
+        except voyageai.error.RateLimitError as e:
+            last_error = e
+    raise last_error
 
 # Qdrant client
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -33,19 +53,16 @@ async def retrieve(
     if cached:
         return json.loads(cached)
 
-    # HyDE: embed a hypothetical answer, not the raw question
+    # HyDE: embed a hypothetical answer, not the raw question.
+    # Must use the same model as the embedder (voyage-code-3) so the query
+    # vector lives in the same space as the indexed document vectors.
     hypothetical = await generate_hyde(query)
-    embed_result = await voyage_client.embed(
-        [hypothetical],
-        model="voyage-code-2",
-        input_type="query",
-    )
-    vec = embed_result.embeddings[0]
+    vec = await _embed_query(hypothetical)
 
     # Vector search: top 20 candidates from Qdrant
-    search_results = qdrant_client.search(
+    search_results = qdrant_client.query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=vec,
+        query=vec,
         query_filter=Filter(
             must=[
                 FieldCondition(
@@ -55,7 +72,7 @@ async def retrieve(
             ]
         ),
         limit=20
-    )
+    ).points
     
     rows = [
         {
