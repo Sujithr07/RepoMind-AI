@@ -4,19 +4,14 @@ import hashlib
 import json
 import os
 import uuid
-from pgvector.asyncpg import register_vector
 from app.query.hyde import generate_hyde
 from dotenv import load_dotenv
-from sentence_transformers import CrossEncoder
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 load_dotenv()
 
 voyage_client = voyageai.AsyncClient(api_key=os.getenv("VOYAGE_API_KEY"))
-
-# Load CrossEncoder once at module level
-reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 # Qdrant client
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -78,17 +73,9 @@ async def retrieve(
     if not rows:
         return []
 
-    # CrossEncoder rerank: compress 20 -> top_k
-    chunk_texts = [r["content"] for r in rows]
-    chunk_scores = reranker.predict([(query, text) for text in chunk_texts])
-    
-    # Combine chunks with their cross-encoder scores
-    scored_chunks = list(zip(rows, chunk_scores))
-    # Sort by cross-encoder score (descending)
-    scored_chunks.sort(key=lambda x: x[1], reverse=True)
-    # Take top_k
-    top_chunks = scored_chunks[:top_k]
-    
+    # Take top_k directly from Qdrant results (no reranking for now)
+    top_chunks = rows[:top_k]
+
     results = [
         {
             "content": chunk["content"],
@@ -96,9 +83,9 @@ async def retrieve(
             "file_path": chunk["file_path"],
             "start_line": chunk["start_line"],
             "end_line": chunk["end_line"],
-            "relevance_score": float(score),
+            "relevance_score": chunk["similarity"],
         }
-        for chunk, score in top_chunks
+        for chunk in top_chunks
     ]
 
     # Cache for 1 hour; guard against non-serialisable floats (NaN/inf)

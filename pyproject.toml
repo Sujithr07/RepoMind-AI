@@ -25,10 +25,18 @@ dependencies = [
     "qdrant-client>=1.18.0",
     "sentence-transformers>=5.5.0",
     "python-dotenv>=1.2.2",
+    "tree-sitter-java>=0.23.5",
+    "tree-sitter-go>=0.25.0",
+    "tree-sitter-rust>=0.24.2",
+    "tree-sitter-cpp>=0.23.4",
+    "tree-sitter-ruby>=0.23.1",
+    "tree-sitter-c-sharp>=0.23.5",
+    "tree-sitter-php>=0.24.1",
+    "tree-sitter-scala>=0.26.0",
+    "tree-sitter-c>=0.24.2",
 ]
 
 [dependency-groups]
 dev = [
-    "datasets>=4.8.5",
     "ragas>=0.4.3",
 ]

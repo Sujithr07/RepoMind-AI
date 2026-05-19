@@ -2,7 +2,6 @@ import asyncio
 import os
 import asyncpg
 from celery import Celery
-from pgvector.asyncpg import register_vector
 from dotenv import load_dotenv
 from voyageai.error import RateLimitError
 
@@ -53,7 +52,6 @@ async def _index_repo(repo_id: str, github_url: str):
     try:
         dsn = get_dsn()
         conn = await asyncpg.connect(dsn=dsn, ssl=True)
-        await register_vector(conn)
 
         # Mark as indexing
         await conn.execute(

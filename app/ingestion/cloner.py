@@ -10,14 +10,20 @@ load_dotenv()
 SUPPORTED_EXTENSIONS = {
     ".py": "python",
     ".js": "javascript",
-    ".ts": "typescript",
     ".jsx": "javascript",
+    ".ts": "typescript",
     ".tsx": "typescript",
-    ".go": "go",
     ".java": "java",
+    ".go": "go",
     ".rs": "rust",
     ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
     ".c": "c",
+    ".rb": "ruby",
+    ".cs": "csharp",
+    ".php": "php",
+    ".scala": "scala",
 }
 
 SKIP_DIRS = {
