@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+import cohere
 from app.query.hyde import generate_hyde
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
@@ -15,6 +16,7 @@ from rank_bm25 import BM25Okapi
 load_dotenv()
 
 voyage_client = voyageai.AsyncClient(api_key=os.getenv("VOYAGE_API_KEY"))
+cohere_client = cohere.Client(api_key=os.getenv("COHERE_API_KEY"))
 
 # Qdrant client
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -222,6 +224,61 @@ def fuse_rankings(
 
 
 # ---------------------------------------------------------------------------
+# Cohere Reranking
+# ---------------------------------------------------------------------------
+def rerank_with_cohere(
+    query: str,
+    results: list[dict],
+    top_k: int | None = None,
+) -> list[dict]:
+    """Rerank results using Cohere's rerank API.
+
+    Args:
+        query: The user's query
+        results: List of chunk dicts with 'content' field
+        top_k: Number of results to return (defaults to len(results))
+
+    Returns:
+        Reranked list of chunks with 'rerank_score' field added.
+        Falls back to original order if Cohere API fails or is not configured.
+    """
+    if not results:
+        return []
+
+    api_key = os.getenv("COHERE_API_KEY")
+    if not api_key or api_key == "your_cohere_api_key_here":
+        # No API key configured, return results unchanged
+        return results
+
+    try:
+        # Extract documents for reranking
+        documents = [r.get("content", "") for r in results]
+
+        # Call Cohere rerank API
+        response = cohere_client.rerank(
+            model="rerank-english-v3.0",
+            query=query,
+            documents=documents,
+            top_n=top_k or len(results),
+        )
+
+        # Reorder results based on rerank scores
+        reranked = []
+        for result in response.results:
+            original_idx = result.index
+            chunk = results[original_idx].copy()
+            chunk["rerank_score"] = result.relevance_score
+            reranked.append(chunk)
+
+        return reranked
+
+    except Exception as e:
+        print(f"[cohere] rerank failed: {e}")
+        # Fallback to original order on error
+        return results
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 async def retrieve(
@@ -231,12 +288,14 @@ async def retrieve(
     redis_client,
     top_k: int = 5,
     candidate_pool: int = 20,
+    use_rerank: bool = True,
 ) -> list[dict]:
-    """Hybrid retrieval: dense (vector) + sparse (BM25) fused via RRF.
+    """Hybrid retrieval: dense (vector) + sparse (BM25) fused via RRF,
+    optionally reranked with Cohere.
 
     Falls back to vector-only when no BM25 index exists for the repo.
     """
-    cache_key = f"query:{hashlib.sha256(f'{query}{repo_id}{top_k}'.encode()).hexdigest()}"
+    cache_key = f"query:{hashlib.sha256(f'{query}{repo_id}{top_k}{use_rerank}'.encode()).hexdigest()}"
     cached = await redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
@@ -251,7 +310,15 @@ async def retrieve(
         return []
 
     fused = fuse_rankings(vector_results, bm25_results)
-    results = fused[:top_k]
+
+    # Rerank with Cohere if enabled and API key is configured
+    if use_rerank:
+        # Rerank a larger pool (e.g., 20) and then slice to top_k
+        rerank_pool = min(candidate_pool, len(fused))
+        reranked = rerank_with_cohere(query, fused[:rerank_pool], top_k=top_k)
+        results = reranked[:top_k] if reranked else fused[:top_k]
+    else:
+        results = fused[:top_k]
 
     # Cache for 1 hour; guard against non-serialisable floats (NaN/inf)
     await redis_client.setex(

@@ -1,12 +1,13 @@
-"""Unit tests for hybrid search (BM25 + RRF fusion).
+"""Unit tests for hybrid search (BM25 + RRF fusion + Cohere reranking).
 
-These tests intentionally avoid hitting Qdrant / Voyage / Redis. They exercise
+These tests intentionally avoid hitting Qdrant / Voyage / Redis / Cohere. They exercise
 the pure ranking logic and the BM25 build/search round-trip against an
 in-memory fake Redis client that mirrors the small async API surface we use.
 """
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,6 +16,7 @@ from app.query.retriever import (
     build_bm25_index,
     fuse_rankings,
     search_bm25,
+    rerank_with_cohere,
 )
 
 
@@ -191,3 +193,69 @@ async def test_hybrid_fusion_recovers_keyword_only_match():
     # Hybrid recovers the keyword-only chunk that vector-only retrieval missed.
     assert "io.py" in fused_paths
     assert "io.py" not in vector_only_paths
+
+
+# ---------------------------------------------------------------------------
+# Cohere Reranking
+# ---------------------------------------------------------------------------
+def test_rerank_with_cohere_returns_empty_for_empty_results():
+    results = []
+    reranked = rerank_with_cohere("query", results)
+    assert reranked == []
+
+
+def test_rerank_with_cohere_returns_unchanged_when_no_api_key():
+    """When COHERE_API_KEY is missing or placeholder, return results unchanged."""
+    results = [_chunk("a.py", "content a", 0, 1), _chunk("b.py", "content b", 0, 1)]
+
+    with patch.dict("os.environ", {"COHERE_API_KEY": ""}):
+        reranked = rerank_with_cohere("query", results)
+        assert reranked == results
+
+    with patch.dict("os.environ", {"COHERE_API_KEY": "your_cohere_api_key_here"}):
+        reranked = rerank_with_cohere("query", results)
+        assert reranked == results
+
+
+@patch("app.query.retriever.cohere_client")
+def test_rerank_with_cohere_falls_back_on_api_error(mock_client):
+    """When Cohere API fails, return original order as fallback."""
+    results = [_chunk("a.py", "content a", 0, 1), _chunk("b.py", "content b", 0, 1)]
+    mock_client.rerank.side_effect = Exception("API error")
+
+    with patch.dict("os.environ", {"COHERE_API_KEY": "test_key"}):
+        reranked = rerank_with_cohere("query", results)
+        assert reranked == results
+
+
+@patch("app.query.retriever.cohere_client")
+def test_rerank_with_cohere_adds_score_and_reorders(mock_client):
+    """Successful rerank adds rerank_score field and reorders by relevance."""
+    results = [
+        _chunk("a.py", "content a", 0, 1),
+        _chunk("b.py", "content b", 0, 1),
+        _chunk("c.py", "content c", 0, 1),
+    ]
+
+    # Mock Cohere response: reorders to [c, a, b] with scores
+    mock_response = MagicMock()
+    mock_response.results = [
+        MagicMock(index=2, relevance_score=0.95),  # c.py
+        MagicMock(index=0, relevance_score=0.85),  # a.py
+        MagicMock(index=1, relevance_score=0.75),  # b.py
+    ]
+    mock_client.rerank.return_value = mock_response
+
+    with patch.dict("os.environ", {"COHERE_API_KEY": "test_key"}):
+        reranked = rerank_with_cohere("test query", results, top_k=3)
+
+    assert len(reranked) == 3
+    assert reranked[0]["file_path"] == "c.py"
+    assert reranked[1]["file_path"] == "a.py"
+    assert reranked[2]["file_path"] == "b.py"
+
+    # Check rerank_score field is added
+    assert "rerank_score" in reranked[0]
+    assert reranked[0]["rerank_score"] == 0.95
+    assert reranked[1]["rerank_score"] == 0.85
+    assert reranked[2]["rerank_score"] == 0.75
