@@ -5,7 +5,7 @@ Start-Sleep -Seconds 3
 
 # Start Celery Worker
 Write-Host "=== Starting Celery Worker ===" -ForegroundColor Green
-Start-Process -FilePath "python" -ArgumentList "-m", "celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info" -NoNewWindow
+Start-Process -FilePath "python" -ArgumentList "-m", "celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--pool=solo" -NoNewWindow
 Start-Sleep -Seconds 2
 
 Write-Host ""

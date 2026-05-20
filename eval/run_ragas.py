@@ -23,7 +23,6 @@ from typing import Dict, List, Any
 # Add parent directory to path to import app modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app.query.hyde import generate_hyde
 from app.query.retriever import retrieve
 from app.query.answerer import stream_answer
 
@@ -99,8 +98,9 @@ async def get_database_connection() -> asyncpg.Pool:
     raw_url = os.getenv("DATABASE_URL", "")
     db_url = raw_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgres://", "postgresql://")
     db_url = db_url.split("?")[0]
-    
-    pool = await asyncpg.create_pool(db_url, ssl=True)
+
+    use_ssl = not ("localhost" in db_url or "127.0.0.1" in db_url)
+    pool = await asyncpg.create_pool(db_url, ssl="require" if use_ssl else False)
     return pool
 
 
@@ -128,10 +128,7 @@ async def run_rag_pipeline(question: str, repo_id: str, conn: asyncpg.Connection
     Returns:
         Dict with 'answer' (str) and 'contexts' (list of chunk texts)
     """
-    # Step 1: HyDE expansion
-    hyde_snippet = await generate_hyde(question)
-    
-    # Step 2: Retrieve chunks
+    # Step 1: Retrieve chunks (HyDE expansion happens inside `retrieve`)
     chunks = await retrieve(
         query=question,
         repo_id=uuid.UUID(repo_id),
@@ -139,12 +136,16 @@ async def run_rag_pipeline(question: str, repo_id: str, conn: asyncpg.Connection
         redis_client=redis_client,
         top_k=5
     )
-    
-    # Step 3: Generate answer
+
+    # Step 2: Generate answer. stream_answer yields (text_delta, citations|None);
+    # the final yield carries the fully parsed answer.
     answer = ""
-    async for token in stream_answer(question, chunks, history=None):
-        answer += token
-    
+    async for delta, cit in stream_answer(question, chunks, history=None):
+        if cit is not None:
+            answer = cit.get("answer") or answer
+        elif delta:
+            answer += delta
+
     # Extract context texts for evaluation
     contexts = [chunk["content"] for chunk in chunks]
     

@@ -717,6 +717,7 @@
   <div class="topbar">
     <span id="topbarName" class="topbar-empty">Select a repository to start</span>
     <span id="topbarBadge"></span>
+    <button id="reindexBtn" onclick="reindexActive()" title="Re-index repository" style="display:none;margin-left:auto;padding:4px 10px;font-size:11px;font-family:inherit;background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);cursor:pointer;">↺ Re-index</button>
   </div>
 
   <div class="chat-area" id="chatArea">
@@ -775,7 +776,7 @@
 
 
 <script>
-  const API_BASE = 'http://127.0.0.1:8010';
+  const API_BASE = 'http://127.0.0.1:8000';
 
   // ── state ──────────────────────────────────────────────
   const repos = new Map();   // id → { id, url, name, status }
@@ -896,12 +897,14 @@
   }
 
   function renderTopbar() {
-    const nameEl  = document.getElementById('topbarName');
-    const badgeEl = document.getElementById('topbarBadge');
+    const nameEl     = document.getElementById('topbarName');
+    const badgeEl    = document.getElementById('topbarBadge');
+    const reindexBtn = document.getElementById('reindexBtn');
     if (!activeId || !repos.has(activeId)) {
       nameEl.textContent = 'Select a repository to start';
       nameEl.className   = 'topbar-empty';
       badgeEl.innerHTML  = '';
+      reindexBtn.style.display = 'none';
       return;
     }
     const repo = repos.get(activeId);
@@ -915,6 +918,25 @@
       error:    `<span class="badge badge-error"><svg viewBox="0 0 10 10" width="7" height="7"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>Failed</span>`,
     };
     badgeEl.innerHTML = badges[repo.status] || badges.pending;
+    reindexBtn.style.display = (repo.status === 'ready' || repo.status === 'error') ? 'inline-flex' : 'none';
+  }
+
+  async function reindexActive() {
+    if (!activeId) return;
+    const btn = document.getElementById('reindexBtn');
+    btn.disabled = true;
+    btn.textContent = '↺ Re-indexing…';
+    try {
+      const res = await fetch(`${API_BASE}/repos/${activeId}/reindex`, { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed');
+      const repo = repos.get(activeId);
+      if (repo) { repo.status = 'pending'; renderRepoList(); renderTopbar(); }
+      startPoll(activeId);
+    } catch (e) {
+      alert('Re-index failed: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = '↺ Re-index';
+    }
   }
 
   function renderFooter() {
@@ -1025,7 +1047,7 @@
         const raw = line.slice(6);
         if (!raw || raw === '[DONE]') continue;
 
-        // JSON metadata events
+        // JSON events (metadata + answer chunks)
         if (raw.startsWith('{')) {
           try {
             const j = JSON.parse(raw);
@@ -1033,14 +1055,6 @@
             if (j.type === 'citations') { citations = j.citations; continue; }
             if (j.type === 'sources')    { sources = j.sources;       continue; }
             if (j.sources)               { sources = j.sources;       continue; } // legacy
-          } catch { }
-          continue;
-        }
-
-        // answer_chunk events
-        if (raw.startsWith('{')) {
-          try {
-            const j = JSON.parse(raw);
             if (j.type === 'answer_chunk') {
               // First real token — swap typing dots for content div
               if (first) {

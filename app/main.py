@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from app.query.graph import query_graph
+from app.query.answerer import stream_answer
 from app.workers.tasks import index_repo_task
 from app.utils.tracing import get_langfuse
 from app.utils.memory import get_history, save_history
@@ -116,13 +117,28 @@ async def repo_status(repo_id: str):
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT status, indexed_at FROM repos WHERE id = $1::uuid", repo_id
-        )        
+        )
     if not row:
         raise HTTPException(status_code=404, detail="Repo not found")
     return {
         "status": row["status"],
         "indexed_at": str(row["indexed_at"]) if row["indexed_at"] else None
     }
+
+@app.post("/repos/{repo_id}/reindex")
+async def reindex_repo(repo_id: str):
+    """Reset repo status and re-trigger indexing (useful when Qdrant data is lost)."""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, github_url FROM repos WHERE id = $1::uuid", repo_id
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Repo not found")
+        await conn.execute(
+            "UPDATE repos SET status = 'pending', indexed_at = NULL WHERE id = $1::uuid", repo_id
+        )
+    index_repo_task.delay(repo_id, str(row["github_url"]))
+    return {"repo_id": repo_id, "status": "pending"}
 
 @app.post("/query") # Added slash
 async def query_repo(body: QueryRequest):
@@ -160,32 +176,38 @@ async def query_repo(body: QueryRequest):
         
         try:
             async with db_pool.acquire() as conn:
-                # Initialize state for LangGraph
+                # Initialize state for LangGraph (retrieval + reflection only)
                 initial_state = {
                     "question": body.question,
                     "repo_id": body.repo_id,
-                    "hyde_snippet": "",
                     "chunks": [],
-                    "answer": "",
-                    "citations": [],
                     "retry_count": 0,
                     "conn": conn,
                     "redis_client": redis_pool,
                     "history": history
                 }
 
-                # Invoke the LangGraph
+                # Invoke the LangGraph to retrieve relevant chunks
                 result = await query_graph.ainvoke(initial_state)
-
-                final_answer = result.get("answer", "")
-                citations = result.get("citations", [])
+                chunks = result.get("chunks", [])
 
                 # Include session_id in first SSE event
                 yield f"data: {json.dumps({'session_id': session_id})}\n\n"
 
-                # Stream the answer as answer_chunk events
-                for token in final_answer:
-                    yield f"data: {json.dumps({'type': 'answer_chunk', 'content': token})}\n\n"
+                # Stream the answer token-by-token as it's generated
+                streamed = ""
+                final_answer = ""
+                citations = []
+                async for delta, cit in stream_answer(body.question, chunks, history):
+                    if cit is not None:
+                        final_answer = cit.get("answer") or streamed
+                        citations = cit.get("citations", [])
+                    elif delta:
+                        streamed += delta
+                        yield f"data: {json.dumps({'type': 'answer_chunk', 'content': delta})}\n\n"
+
+                if not final_answer:
+                    final_answer = streamed
 
                 # Emit citations event
                 yield f"data: {json.dumps({'type': 'citations', 'citations': citations})}\n\n"
@@ -199,7 +221,7 @@ async def query_repo(body: QueryRequest):
                         "context_prefix": c.get("context_prefix"),
                         "relevance_score": c.get("relevance_score"),
                     }
-                    for c in result.get("chunks", [])
+                    for c in chunks
                 ]
                 yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
                 yield "data: [DONE]\n\n"

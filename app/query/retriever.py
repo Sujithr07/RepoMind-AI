@@ -1,6 +1,5 @@
 import asyncio
 import asyncpg
-import voyageai
 import hashlib
 import json
 import os
@@ -8,6 +7,7 @@ import re
 import uuid
 import cohere
 from app.query.hyde import generate_hyde
+from app.ingestion.embedder import _get_model, _executor
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -15,7 +15,6 @@ from rank_bm25 import BM25Okapi
 
 load_dotenv()
 
-voyage_client = voyageai.AsyncClient(api_key=os.getenv("VOYAGE_API_KEY"))
 cohere_client = cohere.Client(api_key=os.getenv("COHERE_API_KEY"))
 
 # Qdrant client
@@ -29,22 +28,15 @@ _TOKEN_RE = re.compile(r"[\W_]+")
 
 
 async def _embed_query(text: str) -> list[float]:
-    """Embed a query string, retrying on Voyage free-tier (3 RPM) rate limits."""
-    delays = [0, 21, 42, 63]
-    last_error = None
-    for delay in delays:
-        if delay:
-            await asyncio.sleep(delay)
-        try:
-            result = await voyage_client.embed(
-                [text],
-                model="voyage-code-3",
-                input_type="query",
-            )
-            return result.embeddings[0]
-        except voyageai.error.RateLimitError as e:
-            last_error = e
-    raise last_error
+    """Embed a query string locally — no API keys, no rate limits."""
+    loop = asyncio.get_event_loop()
+    embeddings = await loop.run_in_executor(
+        _executor,
+        lambda: _get_model().encode(
+            [text], normalize_embeddings=True
+        ).tolist()
+    )
+    return embeddings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -156,19 +148,23 @@ async def _vector_search(
     hypothetical = await generate_hyde(query)
     vec = await _embed_query(hypothetical)
 
-    search_results = qdrant_client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=vec,
-        query_filter=Filter(
-            must=[
-                FieldCondition(
-                    key="repo_id",
-                    match=MatchValue(value=str(repo_id)),
-                )
-            ]
-        ),
-        limit=top_k,
-    ).points
+    try:
+        search_results = qdrant_client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=vec,
+            query_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="repo_id",
+                        match=MatchValue(value=str(repo_id)),
+                    )
+                ]
+            ),
+            limit=top_k,
+        ).points
+    except Exception as e:
+        print(f"[retriever] Qdrant search failed (collection may not exist): {e}")
+        return []
 
     return [
         {
