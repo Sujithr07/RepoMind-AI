@@ -22,6 +22,7 @@ class QueryState(TypedDict):
     hyde_snippet: str
     chunks: list
     answer: str
+    citations: list
     retry_count: int
     conn: asyncpg.Connection
     redis_client: object
@@ -77,9 +78,12 @@ async def reflect_node(state: QueryState) -> dict:
 async def answer_node(state: QueryState) -> dict:
     """Generate the final answer using the retrieved chunks."""
     result = ""
-    async for token in stream_answer(state["question"], state["chunks"], state.get("history")):
+    citations = []
+    async for token, cit in stream_answer(state["question"], state["chunks"], state.get("history")):
         result += token
-    return {"answer": result}
+        if cit is not None:
+            citations = cit.get("citations", [])
+    return {"answer": result, "citations": citations}
 
 
 def should_retry(state: QueryState) -> Literal["retrieve", "answer"]:

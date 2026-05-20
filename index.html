@@ -460,6 +460,148 @@
     .src-chip svg { width: 9px; height: 9px; flex-shrink: 0; color: var(--primary-soft); }
     .src-chip .src-score { color: var(--text-muted); margin-left: 4px; }
 
+    /* citations */
+    .citations-wrap {
+      margin-top: 12px;
+    }
+
+    .citations-header {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .citations-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .citation-card {
+      background: #252525;
+      border-left: 2px solid #7c3aed;
+      padding: 8px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .citation-card:hover {
+      background: #2a2a2a;
+      border-left-color: #8b5cf6;
+    }
+
+    .citation-file {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--primary-soft);
+      margin-bottom: 4px;
+    }
+
+    .citation-snippet {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+
+    .modal-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      max-width: 700px;
+      width: 90%;
+      max-height: 80vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--elevated);
+    }
+
+    .modal-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .modal-close:hover {
+      background: var(--border);
+      color: var(--text-primary);
+    }
+
+    .modal-close svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .modal-body {
+      padding: 20px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .modal-file {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--primary-soft);
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--divider);
+    }
+
+    .modal-code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      line-height: 1.5;
+    }
+
     /* ─── INPUT BAR ─── */
     .input-bar {
       padding: 12px 20px 16px;
@@ -611,6 +753,26 @@
   </div>
 
 </main>
+
+<!-- Citation Modal -->
+<div class="modal-overlay" id="citationModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modalTitle"></div>
+      <button class="modal-close" onclick="closeCitationModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-file" id="modalFile"></div>
+      <div class="modal-code" id="modalCode"></div>
+    </div>
+  </div>
+</div>
+
 
 <script>
   const API_BASE = 'http://127.0.0.1:8010';
@@ -844,10 +1006,11 @@
     let buf       = '';
     let full      = '';
     let sources   = [];
+    let citations = [];
     let first     = true;
 
     const bubble = msgEl.querySelector('.bubble');
-    let contentEl, sourcesEl;
+    let contentEl, sourcesEl, citationsEl;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -862,23 +1025,47 @@
         const raw = line.slice(6);
         if (!raw || raw === '[DONE]') continue;
 
-        // JSON metadata
+        // JSON metadata events
         if (raw.startsWith('{')) {
           try {
             const j = JSON.parse(raw);
-            if (j.session_id) { sessionId = j.session_id; continue; }
-            if (j.sources)    { sources = j.sources;       continue; }
+            if (j.session_id)  { sessionId = j.session_id; continue; }
+            if (j.type === 'citations') { citations = j.citations; continue; }
+            if (j.type === 'sources')    { sources = j.sources;       continue; }
+            if (j.sources)               { sources = j.sources;       continue; } // legacy
           } catch { }
+          continue;
         }
 
-        // First real token — swap typing dots for content div
+        // answer_chunk events
+        if (raw.startsWith('{')) {
+          try {
+            const j = JSON.parse(raw);
+            if (j.type === 'answer_chunk') {
+              // First real token — swap typing dots for content div
+              if (first) {
+                bubble.innerHTML = `<div class="msg-content"></div><div class="citations-wrap" style="display:none"></div><div class="sources-wrap" style="display:none"></div>`;
+                contentEl  = bubble.querySelector('.msg-content');
+                citationsEl = bubble.querySelector('.citations-wrap');
+                sourcesEl  = bubble.querySelector('.sources-wrap');
+                first = false;
+              }
+              full += j.content;
+              contentEl.innerHTML = md(full) + '<span class="cursor">▋</span>';
+              scrollBottom();
+            }
+          } catch { }
+          continue;
+        }
+
+        // Legacy plain text tokens (fallback)
         if (first) {
-          bubble.innerHTML = `<div class="msg-content"></div><div class="sources-wrap" style="display:none"></div>`;
+          bubble.innerHTML = `<div class="msg-content"></div><div class="citations-wrap" style="display:none"></div><div class="sources-wrap" style="display:none"></div>`;
           contentEl  = bubble.querySelector('.msg-content');
+          citationsEl = bubble.querySelector('.citations-wrap');
           sourcesEl  = bubble.querySelector('.sources-wrap');
           first = false;
         }
-
         full += raw;
         contentEl.innerHTML = md(full) + '<span class="cursor">▋</span>';
         scrollBottom();
@@ -895,6 +1082,13 @@
     contentEl.innerHTML = md(full);
     bubble.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
 
+    // Display citations if available
+    if (citations.length > 0) {
+      citationsEl.style.display = 'block';
+      buildCitations(citationsEl, citations);
+    }
+
+    // Display sources if available
     if (sources.length > 0) {
       sourcesEl.style.display = 'block';
       buildSources(sourcesEl, sources);
@@ -981,6 +1175,45 @@
 
     container.appendChild(toggle);
     container.appendChild(list);
+  }
+
+  function buildCitations(container, citations) {
+    const header = document.createElement('div');
+    header.className = 'citations-header';
+    header.textContent = 'Citations';
+
+    const list = document.createElement('div');
+    list.className = 'citations-list';
+
+    for (const c of citations) {
+      const card = document.createElement('div');
+      card.className = 'citation-card';
+      card.onclick = () => openCitationModal(c);
+      card.innerHTML = `
+        <div class="citation-file">${esc(c.file)}:${c.line}</div>
+        <div class="citation-snippet">${esc(c.snippet)}</div>
+      `;
+      list.appendChild(card);
+    }
+
+    container.appendChild(header);
+    container.appendChild(list);
+  }
+
+  function openCitationModal(citation) {
+    const overlay = document.getElementById('citationModal');
+    const title = document.getElementById('modalTitle');
+    const code = document.getElementById('modalCode');
+
+    title.textContent = `${citation.file}:${citation.line}`;
+    code.textContent = citation.snippet;
+
+    overlay.classList.add('active');
+  }
+
+  function closeCitationModal() {
+    const overlay = document.getElementById('citationModal');
+    overlay.classList.remove('active');
   }
 
   function scrollBottom() {

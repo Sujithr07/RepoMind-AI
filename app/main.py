@@ -155,23 +155,28 @@ async def query_repo(body: QueryRequest):
                     "hyde_snippet": "",
                     "chunks": [],
                     "answer": "",
+                    "citations": [],
                     "retry_count": 0,
                     "conn": conn,
                     "redis_client": redis_pool,
                     "history": history
                 }
-                
+
                 # Invoke the LangGraph
                 result = await query_graph.ainvoke(initial_state)
 
-                # Stream the answer
                 final_answer = result.get("answer", "")
+                citations = result.get("citations", [])
 
                 # Include session_id in first SSE event
                 yield f"data: {json.dumps({'session_id': session_id})}\n\n"
 
+                # Stream the answer as answer_chunk events
                 for token in final_answer:
-                    yield f"data: {token}\n\n"
+                    yield f"data: {json.dumps({'type': 'answer_chunk', 'content': token})}\n\n"
+
+                # Emit citations event
+                yield f"data: {json.dumps({'type': 'citations', 'citations': citations})}\n\n"
 
                 # Emit the source chunks used so the client can show citations
                 sources = [
@@ -184,7 +189,7 @@ async def query_repo(body: QueryRequest):
                     }
                     for c in result.get("chunks", [])
                 ]
-                yield f"data: {json.dumps({'sources': sources})}\n\n"
+                yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
                 yield "data: [DONE]\n\n"
                 
                 # Save updated history
