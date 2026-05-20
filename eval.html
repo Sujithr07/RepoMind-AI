@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Evaluation Dashboard - RepoMind</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a1a;
+      color: #f0f0f0;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+
+    .header {
+      margin-bottom: 40px;
+    }
+
+    .header h1 {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .header p {
+      color: #6b7280;
+      font-size: 14px;
+    }
+
+    /* Metric Cards */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 20px;
+      margin-bottom: 30px;
+    }
+
+    .metric-card {
+      background: #252525;
+      border-top: 2px solid #7c3aed;
+      border-radius: 12px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .metric-name {
+      font-size: 14px;
+      font-weight: 500;
+      color: #6b7280;
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .metric-score {
+      font-size: 36px;
+      font-weight: 700;
+      color: #f0f0f0;
+      margin-bottom: 8px;
+    }
+
+    .metric-gauge {
+      width: 120px;
+      height: 120px;
+      position: relative;
+    }
+
+    .metric-gauge svg {
+      transform: rotate(-90deg);
+    }
+
+    .metric-gauge circle {
+      fill: none;
+      stroke-width: 8;
+    }
+
+    .metric-gauge .bg {
+      stroke: #2a2a2a;
+    }
+
+    .metric-gauge .progress {
+      stroke-dasharray: 314;
+      stroke-dashoffset: 314;
+      transition: stroke-dashoffset 1s ease-out;
+    }
+
+    .metric-gauge .progress.green {
+      stroke: #22c55e;
+    }
+
+    .metric-gauge .progress.amber {
+      stroke: #f59e0b;
+    }
+
+    .metric-gauge .progress.red {
+      stroke: #ef4444;
+    }
+
+    /* Overall Score Card */
+    .overall-card {
+      background: #252525;
+      border-top: 2px solid #7c3aed;
+      border-radius: 12px;
+      padding: 32px;
+      margin-bottom: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 24px;
+    }
+
+    .overall-info {
+      flex: 1;
+    }
+
+    .overall-label {
+      font-size: 16px;
+      font-weight: 600;
+      color: #f0f0f0;
+      margin-bottom: 8px;
+    }
+
+    .overall-score {
+      font-size: 48px;
+      font-weight: 700;
+      color: #7c3aed;
+    }
+
+    .overall-gauge {
+      width: 150px;
+      height: 150px;
+    }
+
+    .overall-gauge svg {
+      transform: rotate(-90deg);
+    }
+
+    .overall-gauge circle {
+      fill: none;
+      stroke-width: 10;
+    }
+
+    .overall-gauge .bg {
+      stroke: #2a2a2a;
+    }
+
+    .overall-gauge .progress {
+      stroke: #7c3aed;
+      stroke-dasharray: 440;
+      stroke-dashoffset: 440;
+      transition: stroke-dashoffset 1s ease-out;
+    }
+
+    /* Last Run Info */
+    .last-run {
+      background: #252525;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .last-run-info {
+      color: #6b7280;
+      font-size: 14px;
+    }
+
+    .last-run-info strong {
+      color: #f0f0f0;
+    }
+
+    /* Run Button */
+    .run-btn {
+      background: #7c3aed;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 24px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .run-btn:hover {
+      background: #8b5cf6;
+    }
+
+    .run-btn:active {
+      transform: scale(0.98);
+    }
+
+    .run-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .run-btn .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      display: none;
+    }
+
+    .run-btn.running .spinner {
+      display: block;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Test Results Table */
+    .table-section {
+      background: #252525;
+      border-radius: 12px;
+      padding: 24px;
+    }
+
+    .table-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .table-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #f0f0f0;
+    }
+
+    .filter-dropdown {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      color: #f0f0f0;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .filter-dropdown:focus {
+      outline: none;
+      border-color: #7c3aed;
+    }
+
+    .table-container {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    thead {
+      background: #1a1a1a;
+    }
+
+    th {
+      padding: 12px 16px;
+      text-align: left;
+      font-weight: 600;
+      color: #6b7280;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    th:hover {
+      color: #f0f0f0;
+    }
+
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid #2a2a2a;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #1a1a1a;
+    }
+
+    tbody tr:nth-child(odd) {
+      background: #252525;
+    }
+
+    tbody tr:hover {
+      background: #2a2a2a;
+      cursor: pointer;
+    }
+
+    .question-col {
+      max-width: 300px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .score-col {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+    }
+
+    .passed-check {
+      color: #22c55e;
+      font-size: 18px;
+    }
+
+    .passed-x {
+      color: #ef4444;
+      font-size: 18px;
+    }
+
+    /* Expandable Row */
+    .expanded-row {
+      background: #1a1a1a;
+      padding: 20px;
+      border-bottom: 1px solid #2a2a2a;
+    }
+
+    .expanded-row h4 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #6b7280;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .expanded-row p {
+      font-size: 13px;
+      color: #f0f0f0;
+      line-height: 1.6;
+      margin-bottom: 16px;
+      white-space: pre-wrap;
+    }
+
+    .expanded-row p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Loading State */
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #6b7280;
+    }
+
+    .loading-skeleton {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 30px;
+    }
+
+    .skeleton-card {
+      flex: 1;
+      height: 180px;
+      background: #252525;
+      border-radius: 12px;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
+    }
+
+    /* Error State */
+    .error {
+      text-align: center;
+      padding: 40px;
+      color: #ef4444;
+    }
+
+    /* Success Message */
+    .success-message {
+      background: #22c55e;
+      color: white;
+      padding: 12px 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      display: none;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .success-message.show {
+      display: flex;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .metrics-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .overall-card {
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .overall-info {
+        text-align: center;
+      }
+
+      .run-btn {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .table-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .filter-dropdown {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Evaluation Dashboard</h1>
+      <p>RAG Pipeline Quality Metrics</p>
+    </div>
+
+    <div id="loadingState" class="loading">
+      <div class="loading-skeleton">
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+      </div>
+      <p>Loading evaluation results...</p>
+    </div>
+
+    <div id="errorState" class="error" style="display:none">
+      <p>No evaluation results yet. Click 'Run Evaluation' to start.</p>
+    </div>
+
+    <div id="dashboardContent" style="display:none">
+      <!-- Metric Cards -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-name">Faithfulness</div>
+          <div class="metric-gauge">
+            <svg width="120" height="120" viewBox="0 0 120 120">
+              <circle class="bg" cx="60" cy="60" r="50"/>
+              <circle class="progress green" id="faithfulnessProgress" cx="60" cy="60" r="50"/>
+            </svg>
+          </div>
+          <div class="metric-score" id="faithfulnessScore">0%</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-name">Answer Relevancy</div>
+          <div class="metric-gauge">
+            <svg width="120" height="120" viewBox="0 0 120 120">
+              <circle class="bg" cx="60" cy="60" r="50"/>
+              <circle class="progress green" id="relevancyProgress" cx="60" cy="60" r="50"/>
+            </svg>
+          </div>
+          <div class="metric-score" id="relevancyScore">0%</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-name">Context Recall</div>
+          <div class="metric-gauge">
+            <svg width="120" height="120" viewBox="0 0 120 120">
+              <circle class="bg" cx="60" cy="60" r="50"/>
+              <circle class="progress green" id="recallProgress" cx="60" cy="60" r="50"/>
+            </svg>
+          </div>
+          <div class="metric-score" id="recallScore">0%</div>
+        </div>
+      </div>
+
+      <!-- Overall Score -->
+      <div class="overall-card">
+        <div class="overall-info">
+          <div class="overall-label">Overall Quality Score</div>
+          <div class="overall-score" id="overallScore">0%</div>
+        </div>
+        <div class="overall-gauge">
+          <svg width="150" height="150" viewBox="0 0 150 150">
+            <circle class="bg" cx="75" cy="75" r="70"/>
+            <circle class="progress" id="overallProgress" cx="75" cy="75" r="70"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Last Run Info -->
+      <div class="last-run">
+        <div class="last-run-info">
+          <span id="lastRunText">Last run: Never</span>
+        </div>
+        <div class="last-run-info">
+          <span id="testCountText">0 test cases evaluated</span>
+        </div>
+      </div>
+
+      <!-- Success Message -->
+      <div class="success-message" id="successMessage">
+        <span>✓</span>
+        <span>Evaluation complete! Scores updated.</span>
+      </div>
+
+      <!-- Run Button -->
+      <button class="run-btn" id="runBtn" onclick="runEvaluation()">
+        <div class="spinner"></div>
+        <span id="runBtnText">Run Evaluation</span>
+      </button>
+
+      <!-- Test Results Table -->
+      <div class="table-section" style="margin-top: 30px;">
+        <div class="table-header">
+          <div class="table-title">Test Results</div>
+          <select class="filter-dropdown" id="filterDropdown" onchange="filterTable()">
+            <option value="all">All Tests</option>
+            <option value="passed">Passed Only</option>
+            <option value="failed">Failed Only</option>
+          </select>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th onclick="sortTable('question')">Question</th>
+                <th onclick="sortTable('answerLength')">Answer Length</th>
+                <th onclick="sortTable('faithfulness')">Faithfulness</th>
+                <th onclick="sortTable('relevancy')">Relevancy</th>
+                <th onclick="sortTable('recall')">Recall</th>
+                <th onclick="sortTable('passed')">Passed</th>
+              </tr>
+            </thead>
+            <tbody id="testResultsBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://127.0.0.1:8010';
+    let currentResults = null;
+    let sortField = null;
+    let sortDirection = 'asc';
+
+    // Load results on page load
+    document.addEventListener('DOMContentLoaded', () => {
+      loadResults();
+    });
+
+    async function loadResults() {
+      try {
+        const response = await fetch(`${API_BASE}/eval/results`);
+        const data = await response.json();
+
+        if (data.test_count === 0) {
+          showError();
+          return;
+        }
+
+        currentResults = data;
+        renderDashboard(data);
+      } catch (error) {
+        console.error('Failed to load results:', error);
+        showError();
+      }
+    }
+
+    function showError() {
+      document.getElementById('loadingState').style.display = 'none';
+      document.getElementById('errorState').style.display = 'block';
+    }
+
+    function renderDashboard(data) {
+      document.getElementById('loadingState').style.display = 'none';
+      document.getElementById('errorState').style.display = 'none';
+      document.getElementById('dashboardContent').style.display = 'block';
+
+      // Render metric cards
+      renderMetric('faithfulness', data.metrics.faithfulness);
+      renderMetric('relevancy', data.metrics.answer_relevancy);
+      renderMetric('recall', data.metrics.context_recall);
+
+      // Render overall score
+      const overall = (data.metrics.faithfulness + data.metrics.answer_relevancy + data.metrics.context_recall) / 3;
+      document.getElementById('overallScore').textContent = `${Math.round(overall * 100)}%`;
+      renderOverallGauge(overall);
+
+      // Render last run info
+      if (data.last_run) {
+        const date = new Date(data.last_run);
+        document.getElementById('lastRunText').innerHTML = `Last run: <strong>${date.toLocaleString()}</strong>`;
+      }
+      document.getElementById('testCountText').innerHTML = `<strong>${data.test_count}</strong> test cases evaluated`;
+
+      // Render table
+      renderTable(data.test_cases);
+    }
+
+    function renderMetric(name, score) {
+      const scoreText = `${Math.round(score * 100)}%`;
+      document.getElementById(`${name}Score`).textContent = scoreText;
+
+      const progress = document.getElementById(`${name}Progress`);
+      const circumference = 314;
+      const offset = circumference - (score * circumference);
+      progress.style.strokeDashoffset = offset;
+
+      // Set color based on score
+      progress.classList.remove('green', 'amber', 'red');
+      if (score >= 0.8) {
+        progress.classList.add('green');
+      } else if (score >= 0.6) {
+        progress.classList.add('amber');
+      } else {
+        progress.classList.add('red');
+      }
+    }
+
+    function renderOverallGauge(score) {
+      const progress = document.getElementById('overallProgress');
+      const circumference = 440;
+      const offset = circumference - (score * circumference);
+      progress.style.strokeDashoffset = offset;
+    }
+
+    function renderTable(testCases) {
+      const tbody = document.getElementById('testResultsBody');
+      tbody.innerHTML = '';
+
+      for (const testCase of testCases) {
+        const row = document.createElement('tr');
+        row.onclick = () => toggleRow(testCase);
+        row.innerHTML = `
+          <td class="question-col" title="${escapeHtml(testCase.question)}">${escapeHtml(testCase.question)}</td>
+          <td>${testCase.answer.length}</td>
+          <td class="score-col">${(testCase.faithfulness_score * 100).toFixed(1)}%</td>
+          <td class="score-col">${(testCase.relevancy_score * 100).toFixed(1)}%</td>
+          <td class="score-col">${(testCase.recall_score * 100).toFixed(1)}%</td>
+          <td>${testCase.passed ? '<span class="passed-check">✓</span>' : '<span class="passed-x">✗</span>'}</td>
+        `;
+        tbody.appendChild(row);
+      }
+    }
+
+    function toggleRow(testCase) {
+      const tbody = document.getElementById('testResultsBody');
+      const existingExpanded = tbody.querySelector('.expanded-row');
+      
+      if (existingExpanded) {
+        existingExpanded.remove();
+        return;
+      }
+
+      const expandedRow = document.createElement('tr');
+      expandedRow.innerHTML = `
+        <td colspan="6" style="padding: 0;">
+          <div class="expanded-row">
+            <h4>Question</h4>
+            <p>${escapeHtml(testCase.question)}</p>
+            <h4>Answer</h4>
+            <p>${escapeHtml(testCase.answer)}</p>
+            <h4>Ground Truth</h4>
+            <p>${escapeHtml(testCase.ground_truth)}</p>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(expandedRow);
+    }
+
+    async function runEvaluation() {
+      const btn = document.getElementById('runBtn');
+      const btnText = document.getElementById('runBtnText');
+      
+      btn.disabled = true;
+      btn.classList.add('running');
+      btnText.textContent = 'Running evaluation...';
+
+      try {
+        await fetch(`${API_BASE}/eval/run`, { method: 'POST' });
+        
+        // Poll for completion
+        pollStatus();
+      } catch (error) {
+        console.error('Failed to start evaluation:', error);
+        btn.disabled = false;
+        btn.classList.remove('running');
+        btnText.textContent = 'Run Evaluation';
+      }
+    }
+
+    async function pollStatus() {
+      const poll = async () => {
+        try {
+          const response = await fetch(`${API_BASE}/eval/status`);
+          const data = await response.json();
+
+          if (data.status === 'completed') {
+            const btn = document.getElementById('runBtn');
+            const btnText = document.getElementById('runBtnText');
+            
+            btn.disabled = false;
+            btn.classList.remove('running');
+            btnText.textContent = 'Run Evaluation';
+
+            // Show success message
+            document.getElementById('successMessage').classList.add('show');
+            setTimeout(() => {
+              document.getElementById('successMessage').classList.remove('show');
+            }, 3000);
+
+            // Reload results
+            loadResults();
+          } else if (data.status === 'running') {
+            setTimeout(poll, 2000);
+          } else {
+            const btn = document.getElementById('runBtn');
+            const btnText = document.getElementById('runBtnText');
+            btn.disabled = false;
+            btn.classList.remove('running');
+            btnText.textContent = 'Run Evaluation';
+          }
+        } catch (error) {
+          console.error('Failed to poll status:', error);
+          const btn = document.getElementById('runBtn');
+          const btnText = document.getElementById('runBtnText');
+          btn.disabled = false;
+          btn.classList.remove('running');
+          btnText.textContent = 'Run Evaluation';
+        }
+      };
+
+      poll();
+    }
+
+    function filterTable() {
+      const filter = document.getElementById('filterDropdown').value;
+      if (!currentResults) return;
+
+      let filtered = currentResults.test_cases;
+      if (filter === 'passed') {
+        filtered = filtered.filter(tc => tc.passed);
+      } else if (filter === 'failed') {
+        filtered = filtered.filter(tc => !tc.passed);
+      }
+
+      renderTable(filtered);
+    }
+
+    function sortTable(field) {
+      if (!currentResults) return;
+
+      if (sortField === field) {
+        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortField = field;
+        sortDirection = 'asc';
+      }
+
+      const sorted = [...currentResults.test_cases].sort((a, b) => {
+        let aVal, bVal;
+
+        switch (field) {
+          case 'question':
+            aVal = a.question;
+            bVal = b.question;
+            break;
+          case 'answerLength':
+            aVal = a.answer.length;
+            bVal = b.answer.length;
+            break;
+          case 'faithfulness':
+            aVal = a.faithfulness_score;
+            bVal = b.faithfulness_score;
+            break;
+          case 'relevancy':
+            aVal = a.relevancy_score;
+            bVal = b.relevancy_score;
+            break;
+          case 'recall':
+            aVal = a.recall_score;
+            bVal = b.recall_score;
+            break;
+          case 'passed':
+            aVal = a.passed ? 1 : 0;
+            bVal = b.passed ? 1 : 0;
+            break;
+        }
+
+        if (sortDirection === 'asc') {
+          return aVal > bVal ? 1 : -1;
+        } else {
+          return aVal < bVal ? 1 : -1;
+        }
+      });
+
+      renderTable(sorted);
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>

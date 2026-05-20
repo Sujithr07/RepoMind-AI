@@ -18,6 +18,7 @@ from app.query.graph import query_graph
 from app.workers.tasks import index_repo_task
 from app.utils.tracing import get_langfuse
 from app.utils.memory import get_history, save_history
+from app.api import eval
 
 load_dotenv()
 
@@ -59,6 +60,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include evaluation API routes
+app.include_router(eval.router)
+
 @app.get("/")
 async def root():
     """Serve the HTML UI."""
@@ -66,6 +70,14 @@ async def root():
     if html_path.exists():
         return FileResponse(html_path, media_type="text/html")
     return {"error": "index.html not found"}
+
+@app.get("/eval")
+async def eval_dashboard():
+    """Serve the evaluation dashboard."""
+    html_path = Path(__file__).parent.parent / "eval.html"
+    if html_path.exists():
+        return FileResponse(html_path, media_type="text/html")
+    return {"error": "eval.html not found"}
 
 # Request/response models
 class AddRequest(BaseModel):
