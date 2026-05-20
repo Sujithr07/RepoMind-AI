@@ -76,7 +76,6 @@ dmypy.json
 qdrant_storage/
 
 # Test files
-test_*.py
 run_e2e_test.sh
 test_output.log
 

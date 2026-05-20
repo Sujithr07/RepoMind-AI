@@ -2,10 +2,12 @@
 import uuid
 import asyncpg
 import os
+import redis.asyncio as aioredis
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance
 from app.ingestion.chunker import CodeChunk
+from app.query.retriever import build_bm25_index
 
 load_dotenv()
 
@@ -30,8 +32,12 @@ async def upsert_chunks(
     chunks: list[CodeChunk],
     embeddings: list[list[float]],
 ) -> None:
-    """Batch upsert chunks + embeddings into Qdrant.
-    Keeps PostgreSQL for repo metadata only."""
+    """Batch upsert chunks + embeddings into Qdrant, then build a BM25 index
+    over the same chunks and persist it in Redis for hybrid retrieval.
+
+    PostgreSQL keeps repo metadata only; chunk content lives in Qdrant payloads
+    (dense) and the Redis-backed BM25 corpus (sparse).
+    """
 
     points = [
         PointStruct(
@@ -54,3 +60,18 @@ async def upsert_chunks(
         points=points
     )
     print(f"[indexer] upserted {len(points)} chunks for repo {repo_id}")
+
+    # Build & cache BM25 index for the same corpus. Use a short-lived async
+    # Redis client because the indexer runs in a Celery worker process that
+    # does not share FastAPI's connection pool.
+    redis_client = aioredis.from_url(
+        os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        decode_responses=True,
+    )
+    try:
+        await build_bm25_index(chunks, repo_id, redis_client)
+    except Exception as e:
+        # BM25 is best-effort: if it fails, retrieval falls back to vector-only.
+        print(f"[indexer] BM25 index build failed for repo {repo_id}: {e}")
+    finally:
+        await redis_client.aclose()
