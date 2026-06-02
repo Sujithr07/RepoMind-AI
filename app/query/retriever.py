@@ -7,7 +7,6 @@ import re
 import uuid
 import cohere
 from app.query.hyde import generate_hyde
-from app.ingestion.embedder import _get_model, _executor
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -16,6 +15,7 @@ from rank_bm25 import BM25Okapi
 load_dotenv()
 
 cohere_client = cohere.Client(api_key=os.getenv("COHERE_API_KEY"))
+_async_cohere_client = cohere.AsyncClient(api_key=os.getenv("COHERE_API_KEY"))
 
 # Qdrant client
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -28,15 +28,14 @@ _TOKEN_RE = re.compile(r"[\W_]+")
 
 
 async def _embed_query(text: str) -> list[float]:
-    """Embed a query string locally — no API keys, no rate limits."""
-    loop = asyncio.get_event_loop()
-    embeddings = await loop.run_in_executor(
-        _executor,
-        lambda: _get_model().encode(
-            [text], normalize_embeddings=True
-        ).tolist()
+    """Embed a query string via Cohere Embed API."""
+    response = await _async_cohere_client.embed(
+        texts=[text],
+        model="embed-english-v3.0",
+        input_type="search_query",
+        embedding_types=["float"],
     )
-    return embeddings[0]
+    return response.embeddings.float_[0]
 
 
 # ---------------------------------------------------------------------------

@@ -1,35 +1,32 @@
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
-from sentence_transformers import SentenceTransformer
+import os
+import cohere
+from dotenv import load_dotenv
 from app.ingestion.chunker import CodeChunk
 
-# Single thread executor keeps the model loaded in one process
-_executor = ThreadPoolExecutor(max_workers=1)
+load_dotenv()
 
-EMBED_MODEL = "BAAI/bge-large-en-v1.5"
 EMBED_DIM = 1024
+EMBED_MODEL = "embed-english-v3.0"
 
+_cohere_client = cohere.AsyncClient(api_key=os.getenv("COHERE_API_KEY"))
 
-@lru_cache(maxsize=1)
-def _get_model() -> SentenceTransformer:
-    print(f"[embedder] loading model {EMBED_MODEL} (first call only)")
-    return SentenceTransformer(EMBED_MODEL)
-
-
-def _encode_sync(texts: list[str]) -> list[list[float]]:
-    model = _get_model()
-    embeddings = model.encode(
-        texts,
-        batch_size=32,
-        show_progress_bar=True,
-        normalize_embeddings=True,
-    )
-    return embeddings.tolist()
+BATCH_SIZE = 96  # Cohere's max per request
 
 
 async def embed_chunks(chunks: list[CodeChunk]) -> list[list[float]]:
-    """Embed code chunks locally — no API keys, no rate limits."""
+    """Embed code chunks via Cohere Embed API in batches."""
     texts = [f"{c.context_prefix}\n\n{c.content}" for c in chunks]
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _encode_sync, texts)
+    all_embeddings: list[list[float]] = []
+
+    for i in range(0, len(texts), BATCH_SIZE):
+        batch = texts[i : i + BATCH_SIZE]
+        response = await _cohere_client.embed(
+            texts=batch,
+            model=EMBED_MODEL,
+            input_type="search_document",
+            embedding_types=["float"],
+        )
+        all_embeddings.extend(response.embeddings.float_)
+        print(f"[embedder] embedded {min(i + BATCH_SIZE, len(texts))}/{len(texts)} chunks")
+
+    return all_embeddings
