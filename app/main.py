@@ -6,7 +6,7 @@ import asyncio
 import redis.asyncio as aioredis
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import urlparse
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from app.query.graph import query_graph
 from app.query.answerer import stream_answer
 from app.workers.tasks import index_repo_task
+from app.workers.progress import channel_for, snapshot_key, is_terminal
 from app.utils.tracing import get_langfuse
 from app.utils.memory import get_history, save_history
 from app.api import eval
@@ -124,6 +125,62 @@ async def repo_status(repo_id: str):
         "status": row["status"],
         "indexed_at": str(row["indexed_at"]) if row["indexed_at"] else None
     }
+
+@app.websocket("/repos/{repo_id}/progress")
+async def repo_progress(websocket: WebSocket, repo_id: str):
+    """Stream real-time indexing progress for a repo over a WebSocket.
+
+    Subscribes to the Redis pub/sub channel the Celery worker publishes to.
+    On connect, replays the latest snapshot (pub/sub has no backlog) so a
+    client joining mid-run sees current progress immediately. Closes once a
+    terminal (done/error) event arrives or the client disconnects.
+    """
+    await websocket.accept()
+    pubsub = redis_pool.pubsub()
+    channel = channel_for(repo_id)
+    await pubsub.subscribe(channel)
+
+    async def forward():
+        # Replay last known state first.
+        snap = await redis_pool.get(snapshot_key(repo_id))
+        if snap:
+            await websocket.send_text(snap)
+            if is_terminal(snap):
+                return
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            data = message["data"]
+            await websocket.send_text(data)
+            if is_terminal(data):
+                return
+
+    async def watch_client():
+        # Surfaces client disconnects so we can tear down the subscription.
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            return
+
+    try:
+        tasks = {asyncio.create_task(forward()), asyncio.create_task(watch_client())}
+        _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+    except Exception as e:
+        print(f"[progress-ws] error for {repo_id}: {e}")
+    finally:
+        try:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
 
 @app.post("/repos/{repo_id}/reindex")
 async def reindex_repo(repo_id: str):
