@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from app.query.graph import query_graph
 from app.query.answerer import stream_answer
 from app.workers.tasks import index_repo_task
+from app.ingestion.indexer import list_indexed_files
 from app.workers.progress import channel_for, snapshot_key, is_terminal
 from app.utils.tracing import get_langfuse
 from app.utils.memory import get_history, save_history
@@ -28,8 +29,10 @@ load_dotenv()
 db_pool: asyncpg.Pool = None
 redis_pool: aioredis.Redis = None
 
+_DEFAULT_DSN = "postgresql://postgres:pass0407@localhost:5432/repomind"
+
 def get_dsn():
-    raw_url = os.getenv("DATABASE_URL", "")
+    raw_url = os.getenv("DATABASE_URL", _DEFAULT_DSN)
     db_url = raw_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgres://", "postgresql://")
     return db_url.split("?")[0]
 
@@ -127,6 +130,16 @@ async def repo_status(repo_id: str):
         "status": row["status"],
         "indexed_at": str(row["indexed_at"]) if row["indexed_at"] else None
     }
+
+@app.get("/repos/{repo_id}/files")
+async def repo_files(repo_id: str):
+    """List the distinct files indexed for a repo — powers the sidebar file tree."""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT status FROM repos WHERE id = $1::uuid", repo_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    files = await list_indexed_files(repo_id)
+    return {"files": files, "count": len(files)}
 
 @app.websocket("/repos/{repo_id}/progress")
 async def repo_progress(websocket: WebSocket, repo_id: str):

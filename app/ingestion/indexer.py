@@ -50,6 +50,37 @@ async def _ensure_collection() -> None:
         _collection_created = True
 
 
+async def list_indexed_files(repo_id: str) -> list[str]:
+    """Return the sorted, distinct file paths indexed for a repo.
+
+    Chunk content lives only in Qdrant payloads (the Postgres ``chunks`` table is
+    unused), so we scroll the collection filtering by ``repo_id`` and collect the
+    distinct ``file_path`` values. Only that one payload field is fetched.
+    """
+    await _ensure_collection()
+    paths: set[str] = set()
+    flt = Filter(must=[FieldCondition(key="repo_id", match=MatchValue(value=repo_id))])
+    next_offset = None
+    while True:
+        points, next_offset = await qdrant_client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=flt,
+            with_payload=["file_path"],
+            with_vectors=False,
+            limit=512,
+            offset=next_offset,
+        )
+        for p in points:
+            fp = (p.payload or {}).get("file_path")
+            if fp:
+                # Stored paths are OS-native (backslashes on Windows); normalize
+                # to forward slashes so clients get consistent POSIX-style paths.
+                paths.add(fp.replace("\\", "/"))
+        if next_offset is None:
+            break
+    return sorted(paths)
+
+
 async def delete_chunks_for_files(
     conn: asyncpg.Connection,
     repo_id: str,

@@ -34,8 +34,10 @@ celery = Celery(
     backend=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
 )
 
+_DEFAULT_DSN = "postgresql://postgres:pass0407@localhost:5432/repomind"
+
 def get_dsn():
-    raw_url = os.getenv("DATABASE_URL", "")
+    raw_url = os.getenv("DATABASE_URL", _DEFAULT_DSN)
     db_url = raw_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgres://", "postgresql://")
     return db_url.split("?")[0]
 
