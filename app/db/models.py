@@ -11,6 +11,7 @@ class Repo(Base):
     id:         Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     github_url: Mapped[str]       = mapped_column(String, unique=True, nullable=False)
     status:     Mapped[str]       = mapped_column(String, default="pending")
+    last_commit_sha: Mapped[str]  = mapped_column(String, nullable=True)
     indexed_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

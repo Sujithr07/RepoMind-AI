@@ -89,6 +89,48 @@ async def build_bm25_index(chunks: list, repo_id, redis_client) -> BM25Okapi:
     return BM25Okapi(tokenized) if tokenized else None
 
 
+async def merge_bm25_index(
+    new_chunks: list,
+    replaced_file_paths,
+    repo_id,
+    redis_client,
+) -> BM25Okapi:
+    """Merge ``new_chunks`` into the repo's existing BM25 corpus and persist it.
+
+    For delta re-indexing: load the current corpus, drop every record whose
+    ``file_path`` is in ``replaced_file_paths`` (the changed/removed files), then
+    append the freshly chunked records. This keeps records for unchanged files
+    intact, so sparse retrieval stays correct over the whole repo.
+
+    Falls back to a plain build when no prior corpus exists.
+    """
+    replaced = set(replaced_file_paths)
+
+    raw = await redis_client.get(f"{BM25_KEY_PREFIX}:{repo_id}")
+    kept: list[dict] = []
+    if raw:
+        try:
+            existing = json.loads(raw).get("chunks", [])
+            kept = [r for r in existing if r.get("file_path") not in replaced]
+        except Exception as e:
+            # Corrupt/legacy payload: rebuild from scratch rather than fail.
+            print(f"[bm25] could not read existing corpus for {repo_id}: {e}")
+            kept = []
+
+    new_records = [_chunk_to_record(c) for c in new_chunks]
+    all_records = kept + new_records
+    tokenized = [_tokenize(r["content"]) for r in all_records]
+
+    payload = json.dumps({"chunks": all_records, "tokenized": tokenized})
+    await redis_client.set(f"{BM25_KEY_PREFIX}:{repo_id}", payload)
+
+    print(
+        f"[bm25] merged {len(new_records)} new + {len(kept)} kept "
+        f"= {len(all_records)} chunks for repo {repo_id}"
+    )
+    return BM25Okapi(tokenized) if tokenized else None
+
+
 async def _load_bm25(repo_id, redis_client) -> tuple[BM25Okapi, list[dict]] | None:
     """Fetch the BM25 corpus for a repo from Redis and reconstruct BM25Okapi.
     Returns None when no index exists (repo indexed before BM25 was added).

@@ -6,9 +6,17 @@ import os
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import PointStruct, VectorParams, Distance
+from qdrant_client.models import (
+    PointStruct,
+    VectorParams,
+    Distance,
+    Filter,
+    FieldCondition,
+    MatchValue,
+    MatchAny,
+)
 from app.ingestion.chunker import CodeChunk
-from app.query.retriever import build_bm25_index
+from app.query.retriever import build_bm25_index, merge_bm25_index
 
 load_dotenv()
 
@@ -42,17 +50,57 @@ async def _ensure_collection() -> None:
         _collection_created = True
 
 
+async def delete_chunks_for_files(
+    conn: asyncpg.Connection,
+    repo_id: str,
+    file_paths: set[str],
+) -> None:
+    """Delete existing Qdrant points and DB rows for specific file paths only.
+
+    Used by delta re-indexing to evict the stale chunks of changed/removed files
+    without wiping the whole repo. A no-op when ``file_paths`` is empty.
+    """
+    if not file_paths:
+        return
+
+    await _ensure_collection()
+    paths = list(file_paths)
+
+    await qdrant_client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=Filter(
+            must=[
+                FieldCondition(key="repo_id", match=MatchValue(value=repo_id)),
+                FieldCondition(key="file_path", match=MatchAny(any=paths)),
+            ]
+        ),
+    )
+    await conn.execute(
+        "DELETE FROM chunks WHERE repo_id = $1::uuid AND file_path = ANY($2::text[])",
+        repo_id,
+        paths,
+    )
+    print(f"[indexer] deleted stale chunks for {len(paths)} files in repo {repo_id}")
+
+
 async def upsert_chunks(
     conn: asyncpg.Connection,
     repo_id: str,
     chunks: list[CodeChunk],
     embeddings: list[list[float]],
+    replaced_file_paths: set[str] | None = None,
 ) -> None:
-    """Batch upsert chunks + embeddings into Qdrant, then build a BM25 index
-    over the same chunks and persist it in Redis for hybrid retrieval.
+    """Batch upsert chunks + embeddings into Qdrant, then refresh the BM25 index
+    in Redis for hybrid retrieval.
 
     PostgreSQL keeps repo metadata only; chunk content lives in Qdrant payloads
     (dense) and the Redis-backed BM25 corpus (sparse).
+
+    ``replaced_file_paths`` distinguishes the two indexing modes:
+      * ``None``  -> full index: rebuild the BM25 corpus from ``chunks`` alone.
+      * a set     -> delta index: merge ``chunks`` into the existing BM25 corpus,
+                     dropping any prior records for these file paths so unchanged
+                     files survive.
     """
 
     await _ensure_collection()
@@ -93,7 +141,10 @@ async def upsert_chunks(
         decode_responses=True,
     )
     try:
-        await build_bm25_index(chunks, repo_id, redis_client)
+        if replaced_file_paths is None:
+            await build_bm25_index(chunks, repo_id, redis_client)
+        else:
+            await merge_bm25_index(chunks, replaced_file_paths, repo_id, redis_client)
     except Exception as e:
         # BM25 is best-effort: if it fails, retrieval falls back to vector-only.
         print(f"[indexer] BM25 index build failed for repo {repo_id}: {e}")
