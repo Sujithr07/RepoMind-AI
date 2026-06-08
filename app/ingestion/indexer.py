@@ -1,10 +1,11 @@
 # app/ingestion/indexer.py
+import asyncio
 import uuid
 import asyncpg
 import os
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance
 from app.ingestion.chunker import CodeChunk
 from app.query.retriever import build_bm25_index
@@ -12,18 +13,33 @@ from app.query.retriever import build_bm25_index
 load_dotenv()
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-qdrant_client = QdrantClient(url=QDRANT_URL)
+qdrant_client = AsyncQdrantClient(url=QDRANT_URL)
 
-# Create collection if it doesn't exist
 COLLECTION_NAME = "codebase_chunks"
-try:
-    qdrant_client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
-    )
-except Exception:
-    # Collection already exists
-    pass
+UPSERT_BATCH_SIZE = 500  # cap points per request so large repos don't send one massive payload
+
+# Guard so the collection is only created once per process.
+_collection_ready: asyncio.Lock = asyncio.Lock()
+_collection_created = False
+
+
+async def _ensure_collection() -> None:
+    """Create the Qdrant collection if it doesn't already exist."""
+    global _collection_created
+    if _collection_created:
+        return
+    async with _collection_ready:
+        if _collection_created:
+            return
+        try:
+            await qdrant_client.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+            )
+        except Exception:
+            # Collection already exists
+            pass
+        _collection_created = True
 
 
 async def upsert_chunks(
@@ -38,6 +54,8 @@ async def upsert_chunks(
     PostgreSQL keeps repo metadata only; chunk content lives in Qdrant payloads
     (dense) and the Redis-backed BM25 corpus (sparse).
     """
+
+    await _ensure_collection()
 
     points = [
         PointStruct(
@@ -55,9 +73,15 @@ async def upsert_chunks(
         for c, emb in zip(chunks, embeddings)
     ]
 
-    qdrant_client.upsert(
-        collection_name=COLLECTION_NAME,
-        points=points
+    batches = [
+        points[i : i + UPSERT_BATCH_SIZE]
+        for i in range(0, len(points), UPSERT_BATCH_SIZE)
+    ]
+    await asyncio.gather(
+        *(
+            qdrant_client.upsert(collection_name=COLLECTION_NAME, points=batch)
+            for batch in batches
+        )
     )
     print(f"[indexer] upserted {len(points)} chunks for repo {repo_id}")
 
