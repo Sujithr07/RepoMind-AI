@@ -52,12 +52,15 @@ async def clone_repo(github_url: str) -> Path:
     if token and "github.com" in github_url:
         github_url = github_url.replace("https://", f"https://{token}@")
 
-    git.Repo.clone_from(
+    repo = git.Repo.clone_from(
         github_url,
         tmp_dir,
         depth=1,           # Shallow clone — only latest commit
         single_branch=True,
     )
+    # Release GitPython's file handles so the temp dir can be removed later;
+    # otherwise Windows holds a lock on .git pack files and cleanup fails.
+    repo.close()
     print("[cloner] clone complete")
     return Path(tmp_dir)
 
@@ -100,8 +103,18 @@ def walk_code_files(repo_path: Path) -> Iterator[tuple[str, str, str]]:
 def cleanup_repo(repo_path: Path) -> None:
     """Remove the temp directory created by clone_repo."""
     import shutil
+    import stat
+
+    def _on_rm_error(func, path, _exc):
+        # Windows marks .git pack files read-only; clear the bit and retry.
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except Exception:
+            pass
+
     try:
-        shutil.rmtree(repo_path)
+        shutil.rmtree(repo_path, onerror=_on_rm_error)
         print(f"[cloner] cleaned up {repo_path}")
     except Exception as e:
         print(f"[cloner] could not clean up {repo_path}: {e}")

@@ -286,31 +286,83 @@
     .badge-pending { background: rgba(113,113,122,.1); color: var(--text-muted); border: 1px solid rgba(113,113,122,.2); }
     .badge-error   { background: rgba(239,68,68,.1);   color: var(--error);   border: 1px solid rgba(239,68,68,.2); }
 
-    /* Live ingestion progress */
-    .progress-wrap {
-      display: none; align-items: center; gap: 10px;
-      flex: 1; min-width: 0; margin-left: 12px; max-width: 460px;
+    /* ── Live ingestion progress panel ── */
+    .progress-panel {
+      display: none;
+      padding: 9px 20px 11px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(245,158,11,.03);
+      flex-shrink: 0;
     }
-    .progress-wrap.active { display: flex; }
-    .progress-track {
-      flex: 1; height: 6px; min-width: 80px;
-      background: rgba(245,158,11,.12);
+    .progress-panel.visible { display: block; }
+    .progress-panel.pp-done { background: rgba(16,185,129,.03); }
+    .progress-panel.pp-error { background: rgba(239,68,68,.03); }
+
+    .pp-bar-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 9px;
+    }
+    .pp-track {
+      flex: 1; height: 4px;
+      background: var(--elevated);
       border-radius: 999px; overflow: hidden;
     }
-    .progress-fill {
+    .pp-fill {
       height: 100%; width: 0%;
       background: var(--warning);
       border-radius: 999px;
-      transition: width .35s ease;
+      transition: width .45s ease, background .3s;
     }
-    .progress-fill.error { background: var(--error); }
-    .progress-fill.done  { background: var(--success); }
-    .progress-label {
+    .pp-fill.pp-done  { background: var(--success); }
+    .pp-fill.pp-error { background: var(--error); }
+    .pp-pct {
+      font-size: 11px; color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+      min-width: 30px; text-align: right;
+    }
+
+    .pp-steps-row {
+      display: flex; align-items: center; gap: 0;
+    }
+    .pp-step {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 11px; font-weight: 500;
+      padding: 2px 7px; border-radius: 5px;
+      white-space: nowrap;
+      transition: color .25s, background .25s;
+    }
+    .pp-step.pending { color: var(--text-muted); }
+    .pp-step.active  { color: var(--warning); background: rgba(245,158,11,.09); }
+    .pp-step.done    { color: var(--success); }
+    .pp-step.pp-error{ color: var(--error);   }
+
+    .pp-sdot {
+      width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+      transition: background .25s;
+    }
+    .pp-step.pending .pp-sdot { background: var(--border); }
+    .pp-step.active  .pp-sdot { background: var(--warning); animation: pp-pulse 1.2s ease-in-out infinite; }
+    .pp-step.done    .pp-sdot { background: var(--success); }
+    .pp-step.pp-error .pp-sdot { background: var(--error); }
+
+    @keyframes pp-pulse {
+      0%,100% { box-shadow: 0 0 0 2px rgba(245,158,11,.2); }
+      50%      { box-shadow: 0 0 0 4px rgba(245,158,11,.0); }
+    }
+
+    .pp-conn {
+      flex: 1; height: 1px; min-width: 14px; max-width: 56px;
+      background: var(--border); margin: 0 1px;
+      transition: background .3s;
+    }
+    .pp-conn.done { background: rgba(16,185,129,.5); }
+
+    .pp-msg {
+      margin-left: auto; padding-left: 14px;
       font-size: 11px; color: var(--text-muted);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      max-width: 280px;
+      max-width: 260px;
     }
-    .progress-pct { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
     .badge-spinner {
       width: 9px; height: 9px;
@@ -743,12 +795,25 @@
   <div class="topbar">
     <span id="topbarName" class="topbar-empty">Select a repository to start</span>
     <span id="topbarBadge"></span>
-    <div id="progressWrap" class="progress-wrap">
-      <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
-      <span id="progressLabel" class="progress-label"></span>
-      <span id="progressPct" class="progress-pct"></span>
-    </div>
     <button id="reindexBtn" onclick="reindexActive()" title="Re-index repository" style="display:none;margin-left:auto;padding:4px 10px;font-size:11px;font-family:inherit;background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);cursor:pointer;">↺ Re-index</button>
+  </div>
+
+  <!-- Live ingestion progress — hidden until WS events arrive -->
+  <div id="progressPanel" class="progress-panel">
+    <div class="pp-bar-row">
+      <div class="pp-track"><div id="ppFill" class="pp-fill"></div></div>
+      <span id="ppPct" class="pp-pct">0%</span>
+    </div>
+    <div class="pp-steps-row">
+      <div class="pp-step pending" id="ppStep-clone"><span class="pp-sdot"></span><span>Clone</span></div>
+      <div class="pp-conn" id="ppConn-0"></div>
+      <div class="pp-step pending" id="ppStep-parse"><span class="pp-sdot"></span><span>Parse</span></div>
+      <div class="pp-conn" id="ppConn-1"></div>
+      <div class="pp-step pending" id="ppStep-embed"><span class="pp-sdot"></span><span>Embed</span></div>
+      <div class="pp-conn" id="ppConn-2"></div>
+      <div class="pp-step pending" id="ppStep-store"><span class="pp-sdot"></span><span>Store</span></div>
+      <span id="ppMsg" class="pp-msg"></span>
+    </div>
   </div>
 
   <div class="chat-area" id="chatArea">
@@ -857,7 +922,7 @@
       selectRepo(id);
       if (data.status !== 'ready' && data.status !== 'error') {
         startPoll(id);
-        connectProgress(id);
+        beginProgress(id);
       }
     } catch (e) {
       setAddStatus(e.message, 'error');
@@ -888,6 +953,21 @@
   }
 
   // ── live ingestion progress (WebSocket) ────────────────
+
+  // Kick off progress tracking for a repo. Seeds an immediate "starting" state
+  // so the panel slides in right away instead of waiting for the first WS event
+  // — that event can be missed in the connect/subscribe race, or sit silent
+  // behind a slow initial clone (the full-index path emits nothing between
+  // "cloning" and "chunking"). Any prior (e.g. error) state is overwritten.
+  function beginProgress(id) {
+    progressState.set(id, { phase: 'cloning', percent: 0, message: 'Starting…' });
+    const repo = repos.get(id);
+    if (repo) repo.status = 'indexing';
+    renderRepoList();
+    if (activeId === id) { renderProgress(); renderTopbar(); }
+    connectProgress(id);
+  }
+
   function connectProgress(id) {
     // Avoid duplicate sockets for the same repo.
     const existing = progressSockets.get(id);
@@ -907,39 +987,88 @@
       const repo = repos.get(id);
       if (repo) {
         if (evt.phase === 'done')  repo.status = 'ready';
-        if (evt.phase === 'error') repo.status = 'error';
+        else if (evt.phase === 'error') repo.status = 'error';
+        else repo.status = 'indexing'; // advance pending→indexing immediately on first WS event
       }
       if (activeId === id) renderProgress();
       renderRepoList();
       if (activeId === id) renderTopbar();
 
-      if (evt.phase === 'done' || evt.phase === 'error') {
-        progressState.delete(id);
-        try { ws.close(); } catch {}
+      if (evt.phase === 'done') {
+        // Flash green for 2.5 s then clear.
+        setTimeout(() => {
+          progressState.delete(id);
+          if (activeId === id) renderProgress();
+        }, 2500);
+      } else if (evt.phase === 'error') {
+        // Keep visible — user needs to see what failed. Cleared on next reindex.
       }
+      try { if (evt.phase === 'done' || evt.phase === 'error') ws.close(); } catch {}
     };
     ws.onclose = () => { if (progressSockets.get(id) === ws) progressSockets.delete(id); };
     ws.onerror = () => { try { ws.close(); } catch {} };
   }
 
+  // Phase order and stage→phase mapping for the 4-step pipeline display.
+  const PP_ORDER  = ['cloning','diffing','chunking','embedding','upserting','done'];
+  const PP_STAGES = [
+    { el: 'clone', phases: ['cloning','diffing'] },
+    { el: 'parse', phases: ['chunking'] },
+    { el: 'embed', phases: ['embedding'] },
+    { el: 'store', phases: ['upserting','done'] },
+  ];
+  const PP_PHASE_LABEL = {
+    cloning:'Cloning', diffing:'Diffing', chunking:'Parsing',
+    embedding:'Embedding', upserting:'Storing',
+  };
+
   function renderProgress() {
-    const wrap  = document.getElementById('progressWrap');
-    const fill  = document.getElementById('progressFill');
-    const label = document.getElementById('progressLabel');
-    const pct   = document.getElementById('progressPct');
+    const panel = document.getElementById('progressPanel');
+    const fill  = document.getElementById('ppFill');
+    const pct   = document.getElementById('ppPct');
+    const msg   = document.getElementById('ppMsg');
 
-    const evt = activeId ? progressState.get(activeId) : null;
-    const repo = activeId ? repos.get(activeId) : null;
-    const active = evt && repo && repo.status !== 'ready' && repo.status !== 'error';
+    const evt  = activeId ? progressState.get(activeId) : null;
+    if (!evt) { panel.classList.remove('visible'); return; }
 
-    if (!active) { wrap.classList.remove('active'); return; }
-
-    wrap.classList.add('active');
     const p = Math.max(0, Math.min(100, evt.percent || 0));
+    const isDone  = evt.phase === 'done';
+    const isError = evt.phase === 'error';
+
+    // Panel visibility + tint
+    panel.classList.add('visible');
+    panel.classList.toggle('pp-done',  isDone);
+    panel.classList.toggle('pp-error', isError);
+
+    // Progress bar
     fill.style.width = p + '%';
-    fill.className = 'progress-fill' + (evt.phase === 'error' ? ' error' : evt.phase === 'done' ? ' done' : '');
-    label.textContent = evt.message || evt.phase || '';
+    fill.className = 'pp-fill' + (isDone ? ' pp-done' : isError ? ' pp-error' : '');
     pct.textContent = p + '%';
+
+    // Detail message
+    msg.textContent = evt.message || '';
+
+    // Stage dots + connectors
+    const phaseIdx = PP_ORDER.indexOf(evt.phase);
+    PP_STAGES.forEach((stage, i) => {
+      const el   = document.getElementById(`ppStep-${stage.el}`);
+      const conn = document.getElementById(`ppConn-${i}`);
+      if (!el) return;
+
+      const idxes    = stage.phases.map(ph => PP_ORDER.indexOf(ph)).filter(x => x >= 0);
+      const stageMin = Math.min(...idxes);
+      const stageMax = Math.max(...idxes);
+
+      let state;
+      if (isError)           state = 'pending';   // can't know which stage errored
+      else if (isDone)       state = 'done';
+      else if (phaseIdx > stageMax) state = 'done';
+      else if (phaseIdx >= stageMin) state = 'active';
+      else                   state = 'pending';
+
+      el.className = `pp-step ${isError && phaseIdx >= stageMin && phaseIdx <= stageMax ? 'pp-error' : state}`;
+      if (conn) conn.className = `pp-conn${state === 'done' ? ' done' : ''}`;
+    });
   }
 
   function selectRepo(id) {
@@ -1004,13 +1133,21 @@
     nameEl.textContent = repo.name;
     nameEl.className   = 'topbar-name';
 
+    const wsEvt = progressState.get(activeId);
+    // Use live phase label when WS data is present, otherwise fall back to spinner.
+    const phaseText = wsEvt ? (PP_PHASE_LABEL[wsEvt.phase] || 'Indexing') : 'Indexing';
+    const indexingBadge = wsEvt
+      ? `<span class="badge badge-indexing"><span class="pp-sdot" style="background:var(--warning);flex-shrink:0;animation:pp-pulse 1.2s ease-in-out infinite;"></span>${phaseText}…</span>`
+      : `<span class="badge badge-indexing"><span class="badge-spinner"></span>Indexing…</span>`;
+    // If WS is already sending but DB status is still 'pending', show indexing badge.
+    const displayStatus = (wsEvt && !['done','error'].includes(wsEvt.phase)) ? 'indexing' : repo.status;
     const badges = {
       ready:    `<span class="badge badge-ready"><svg viewBox="0 0 10 10" width="7" height="7"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>Ready</span>`,
-      indexing: `<span class="badge badge-indexing"><span class="badge-spinner"></span>Indexing…</span>`,
+      indexing: indexingBadge,
       pending:  `<span class="badge badge-pending"><svg viewBox="0 0 10 10" width="7" height="7"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>Pending</span>`,
       error:    `<span class="badge badge-error"><svg viewBox="0 0 10 10" width="7" height="7"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>Failed</span>`,
     };
-    badgeEl.innerHTML = badges[repo.status] || badges.pending;
+    badgeEl.innerHTML = badges[displayStatus] || badges.pending;
     reindexBtn.style.display = (repo.status === 'ready' || repo.status === 'error') ? 'inline-flex' : 'none';
     renderProgress();
   }
@@ -1026,7 +1163,7 @@
       const repo = repos.get(activeId);
       if (repo) { repo.status = 'pending'; renderRepoList(); renderTopbar(); }
       startPoll(activeId);
-      connectProgress(activeId);
+      beginProgress(activeId);
     } catch (e) {
       alert('Re-index failed: ' + e.message);
       btn.disabled = false;

@@ -39,10 +39,27 @@ def get_dsn():
     db_url = raw_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgres://", "postgresql://")
     return db_url.split("?")[0]
 
+# Reuse a single event loop for the lifetime of the worker process. The async
+# API clients (Cohere, Qdrant) are module-level singletons that bind their
+# connection pools to the loop on first use. asyncio.run() created a fresh loop
+# per task and closed it on exit, orphaning those pools and raising
+# "Event loop is closed" on every task after the first. --pool=solo runs tasks
+# serially, so one shared loop is safe.
+_worker_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _run_async(coro):
+    global _worker_loop
+    if _worker_loop is None or _worker_loop.is_closed():
+        _worker_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_worker_loop)
+    return _worker_loop.run_until_complete(coro)
+
+
 @celery.task(bind=True, max_retries=3, default_retry_delay=10)
 def index_repo_task(self, repo_id: str, github_url: str):
     try:
-        asyncio.run(_index_repo(repo_id, github_url))
+        _run_async(_index_repo(repo_id, github_url))
     except Exception as exc:
         # Status is already set to 'error' in _index_repo; retry transient failures.
         raise self.retry(exc=exc)

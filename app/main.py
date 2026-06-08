@@ -65,12 +65,14 @@ app.add_middleware(
 # Include evaluation API routes
 app.include_router(eval.router)
 
+_NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+
 @app.get("/")
 async def root():
     """Serve the HTML UI."""
     html_path = Path(__file__).parent.parent / "index.html"
     if html_path.exists():
-        return FileResponse(html_path, media_type="text/html")
+        return FileResponse(html_path, media_type="text/html", headers=_NO_CACHE)
     return {"error": "index.html not found"}
 
 @app.get("/eval")
@@ -78,7 +80,7 @@ async def eval_dashboard():
     """Serve the evaluation dashboard."""
     html_path = Path(__file__).parent.parent / "eval.html"
     if html_path.exists():
-        return FileResponse(html_path, media_type="text/html")
+        return FileResponse(html_path, media_type="text/html", headers=_NO_CACHE)
     return {"error": "eval.html not found"}
 
 # Request/response models
