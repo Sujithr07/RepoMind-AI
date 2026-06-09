@@ -52,7 +52,7 @@ TEST_CASES = [
     },
     {
         "question": "What models are used for embedding?",
-        "ground_truth": "The project uses Voyage AI's voyage-code-2 model for embedding code snippets and queries. For reranking, it uses the cross-encoder/ms-marco-MiniLM-L-6-v2 model."
+        "ground_truth": "The project uses Cohere's embed-english-v3.0 model (1024-dimensional) to embed code snippets and queries. For reranking it uses Cohere's rerank-english-v3.0, with a local cross-encoder (cross-encoder/ms-marco-MiniLM-L-6-v2) as an automatic fallback when the Cohere API is unavailable or rate-limited."
     },
     {
         "question": "How is the database connection managed?",

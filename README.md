@@ -96,10 +96,12 @@ Source files are parsed using tree-sitter grammars for 13 programming languages.
 extracted at the function, method, and class level based on AST node types — not arbitrary
 fixed-size windows — preserving semantic boundaries and reducing context fragmentation.
 
-### Cohere Reranking
-After RRF fusion, the top 20 candidates are passed to Cohere's cross-encoder reranking model
-(`rerank-english-v3.0`), which scores each chunk against the original query independently. The
-top 5 reranked results are passed to the generation step.
+### Reranking with Graceful Degradation
+After RRF fusion, the top 20 candidates are passed to Cohere's reranking model
+(`rerank-english-v3.0`), which scores each chunk against the original query independently, and the
+top 5 are passed to generation. If the Cohere API is unavailable or rate-limited, reranking
+degrades automatically to a local cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`) that runs
+offline and consumes no API quota — so retrieval quality never hard-fails on a quota limit.
 
 ### LangGraph Retrieval-Reflection Loop
 Retrieval is orchestrated as a LangGraph state machine. A reflection node uses Groq to evaluate
@@ -152,7 +154,7 @@ interactive HTML dashboard with per-question breakdowns and aggregate scores.
 | Component | Technology |
 |---|---|
 | Embeddings | Cohere embed-english-v3.0 (1024-dim) |
-| Reranking | Cohere rerank-english-v3.0 |
+| Reranking | Cohere rerank-english-v3.0 (local cross-encoder fallback) |
 | LLM (generation, query fusion, reflection) | Groq llama-3.3-70b-versatile |
 | BM25 Sparse Retrieval | rank-bm25 0.2.2 |
 

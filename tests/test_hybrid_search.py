@@ -221,28 +221,48 @@ def test_rerank_with_cohere_returns_empty_for_empty_results():
     assert reranked == []
 
 
-def test_rerank_with_cohere_returns_unchanged_when_no_api_key():
-    """When COHERE_API_KEY is missing or placeholder, return results unchanged."""
+@patch("app.query.retriever._local_rerank")
+def test_rerank_uses_local_fallback_when_no_api_key(mock_local):
+    """When COHERE_API_KEY is missing or placeholder, fall back to the local
+    cross-encoder rather than returning the unranked order."""
     results = [_chunk("a.py", "content a", 0, 1), _chunk("b.py", "content b", 0, 1)]
+    sentinel = [_chunk("b.py", "content b", 0, 1)]
+    mock_local.return_value = sentinel
 
-    with patch.dict("os.environ", {"COHERE_API_KEY": ""}):
-        reranked = rerank_with_cohere("query", results)
-        assert reranked == results
+    for key in ("", "your_cohere_api_key_here"):
+        mock_local.reset_mock()
+        with patch.dict("os.environ", {"COHERE_API_KEY": key}):
+            reranked = rerank_with_cohere("query", results, top_k=2)
+        mock_local.assert_called_once_with("query", results, 2)
+        assert reranked is sentinel
 
-    with patch.dict("os.environ", {"COHERE_API_KEY": "your_cohere_api_key_here"}):
-        reranked = rerank_with_cohere("query", results)
-        assert reranked == results
 
-
+@patch("app.query.retriever._local_rerank")
 @patch("app.query.retriever.cohere_client")
-def test_rerank_with_cohere_falls_back_on_api_error(mock_client):
-    """When Cohere API fails, return original order as fallback."""
+def test_rerank_falls_back_to_local_on_api_error(mock_client, mock_local):
+    """When the Cohere API errors (e.g. rate limit), rerank via the local
+    cross-encoder instead of giving up on ranking."""
     results = [_chunk("a.py", "content a", 0, 1), _chunk("b.py", "content b", 0, 1)]
-    mock_client.rerank.side_effect = Exception("API error")
+    mock_client.rerank.side_effect = Exception("rate limited")
+    sentinel = [_chunk("a.py", "content a", 0, 1)]
+    mock_local.return_value = sentinel
 
     with patch.dict("os.environ", {"COHERE_API_KEY": "test_key"}):
         reranked = rerank_with_cohere("query", results)
-        assert reranked == results
+
+    mock_local.assert_called_once()
+    assert reranked is sentinel
+
+
+@patch("app.query.retriever._get_cross_encoder")
+def test_local_rerank_returns_fused_order_when_model_unavailable(mock_get):
+    """If the cross-encoder can't load, _local_rerank degrades to fused order."""
+    from app.query.retriever import _local_rerank
+
+    results = [_chunk("a.py", "content a", 0, 1), _chunk("b.py", "content b", 0, 1)]
+    mock_get.side_effect = RuntimeError("no model")
+
+    assert _local_rerank("query", results) == results
 
 
 @patch("app.query.retriever.cohere_client")

@@ -19,9 +19,12 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 
-# Number of reformulations to request (the original question is always added on
-# top, so the effective query set is NUM_QUERIES + 1).
-NUM_QUERIES = 4
+# Number of reformulations to request. The original question is always added on
+# top, so the effective query set is NUM_QUERIES + 1 (here: 3 queries total).
+# Kept deliberately small: each query is embedded separately at search time, so
+# more reformulations means more embedding-API calls — 3 total balances recall
+# against free-tier embedding quota.
+NUM_QUERIES = 2
 
 SYSTEM_PROMPT = (
     "You are a search query generator for a code search engine. Given a user's "

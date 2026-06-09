@@ -26,16 +26,49 @@ COLLECTION_NAME = "codebase_chunks"
 BM25_KEY_PREFIX = "bm25_index"
 _TOKEN_RE = re.compile(r"[\W_]+")
 
+EMBED_MODEL = "embed-english-v3.0"
+# Query embeddings are deterministic per (text, model), so they cache well. 24h
+# bounds Redis growth while still saving repeated Cohere calls within a session.
+QUERY_EMBED_CACHE_TTL = 86400
 
-async def _embed_query(text: str) -> list[float]:
-    """Embed a query string via Cohere Embed API."""
+
+async def _embed_query(text: str, redis_client=None) -> list[float]:
+    """Embed a query string via Cohere, caching the result in Redis.
+
+    Caching matters now that Multi-Query Fusion embeds several queries per search:
+    recurring reformulations (or repeated questions) are served from cache instead
+    of re-spending Cohere quota. Caching is best-effort — any Redis error falls
+    through to a live embed call.
+
+    Note: there is deliberately no fallback embedding provider. Embeddings from a
+    different model live in a different vector space and are not comparable to the
+    Cohere vectors already stored in Qdrant, so silently swapping models would
+    corrupt retrieval. The embedding provider must stay singular.
+    """
+    cache_key = None
+    if redis_client is not None:
+        cache_key = f"qembed:{EMBED_MODEL}:{hashlib.sha256(text.encode()).hexdigest()}"
+        try:
+            cached = await redis_client.get(cache_key)
+            if cached:
+                return json.loads(cached)
+        except Exception as e:
+            print(f"[retriever] query-embed cache read failed: {e}")
+
     response = await _async_cohere_client.embed(
         texts=[text],
-        model="embed-english-v3.0",
+        model=EMBED_MODEL,
         input_type="search_query",
         embedding_types=["float"],
     )
-    return response.embeddings.float_[0]
+    vec = response.embeddings.float_[0]
+
+    if cache_key is not None:
+        try:
+            await redis_client.setex(cache_key, QUERY_EMBED_CACHE_TTL, json.dumps(vec))
+        except Exception as e:
+            print(f"[retriever] query-embed cache write failed: {e}")
+    return vec
 
 
 # ---------------------------------------------------------------------------
@@ -183,14 +216,15 @@ async def search_bm25(
 async def _vector_search(
     query: str,
     repo_id: uuid.UUID,
+    redis_client=None,
     top_k: int = 20,
 ) -> list[dict]:
     """Dense retrieval against Qdrant for a single (already-expanded) query.
 
     Query expansion now happens upstream in ``retrieve`` via Multi-Query Fusion,
-    so this just embeds the given query and searches.
+    so this just embeds the given query (cached via ``redis_client``) and searches.
     """
-    vec = await _embed_query(query)
+    vec = await _embed_query(query, redis_client)
 
     try:
         search_results = qdrant_client.query_points(
@@ -265,58 +299,90 @@ def fuse_rankings(
 
 
 # ---------------------------------------------------------------------------
-# Cohere Reranking
+# Reranking: Cohere primary, local cross-encoder fallback
 # ---------------------------------------------------------------------------
+LOCAL_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_cross_encoder = None  # lazily loaded singleton; only touched on the fallback path
+
+
+def _get_cross_encoder():
+    """Lazily load the local cross-encoder. Imported and instantiated on first
+    use only (the model weights download once, ~80MB), so the heavy
+    sentence-transformers import never runs unless the Cohere path is unavailable."""
+    global _cross_encoder
+    if _cross_encoder is None:
+        from sentence_transformers import CrossEncoder
+
+        _cross_encoder = CrossEncoder(LOCAL_RERANK_MODEL)
+    return _cross_encoder
+
+
+def _local_rerank(
+    query: str,
+    results: list[dict],
+    top_k: int | None = None,
+) -> list[dict]:
+    """Rerank locally with a cross-encoder when Cohere is unavailable or
+    rate-limited. Runs fully offline, so it never consumes API quota. Falls back
+    to the original fused order if the model can't be loaded or scored."""
+    try:
+        model = _get_cross_encoder()
+        scores = model.predict([(query, r.get("content", "")) for r in results])
+        ranked = sorted(zip(results, scores), key=lambda pair: pair[1], reverse=True)
+        reranked = []
+        for chunk, score in ranked[: top_k or len(results)]:
+            chunk = chunk.copy()
+            chunk["rerank_score"] = float(score)
+            reranked.append(chunk)
+        print(f"[rerank] used local cross-encoder for {len(results)} candidates")
+        return reranked
+    except Exception as e:
+        print(f"[rerank] local cross-encoder failed, using fused order: {e}")
+        return results
+
+
 def rerank_with_cohere(
     query: str,
     results: list[dict],
     top_k: int | None = None,
 ) -> list[dict]:
-    """Rerank results using Cohere's rerank API.
+    """Rerank results, preferring Cohere's hosted reranker and degrading to a
+    local cross-encoder when Cohere is unavailable.
 
-    Args:
-        query: The user's query
-        results: List of chunk dicts with 'content' field
-        top_k: Number of results to return (defaults to len(results))
+    Resolution order:
+      1. Cohere ``rerank-english-v3.0`` (best quality) when an API key is set.
+      2. Local cross-encoder fallback on any Cohere error/rate-limit, or when no
+         API key is configured — keeps reranking working without spending quota.
+      3. Original fused order if the local model is unavailable too.
 
-    Returns:
-        Reranked list of chunks with 'rerank_score' field added.
-        Falls back to original order if Cohere API fails or is not configured.
+    Returns a list of chunk dicts with a ``rerank_score`` field added.
     """
     if not results:
         return []
 
     api_key = os.getenv("COHERE_API_KEY")
-    if not api_key or api_key == "your_cohere_api_key_here":
-        # No API key configured, return results unchanged
-        return results
+    if api_key and api_key != "your_cohere_api_key_here":
+        try:
+            documents = [r.get("content", "") for r in results]
+            response = cohere_client.rerank(
+                model="rerank-english-v3.0",
+                query=query,
+                documents=documents,
+                top_n=top_k or len(results),
+            )
+            reranked = []
+            for result in response.results:
+                chunk = results[result.index].copy()
+                chunk["rerank_score"] = result.relevance_score
+                reranked.append(chunk)
+            return reranked
+        except Exception as e:
+            print(f"[cohere] rerank failed, falling back to local cross-encoder: {e}")
+    else:
+        print("[cohere] no API key, using local cross-encoder rerank")
 
-    try:
-        # Extract documents for reranking
-        documents = [r.get("content", "") for r in results]
-
-        # Call Cohere rerank API
-        response = cohere_client.rerank(
-            model="rerank-english-v3.0",
-            query=query,
-            documents=documents,
-            top_n=top_k or len(results),
-        )
-
-        # Reorder results based on rerank scores
-        reranked = []
-        for result in response.results:
-            original_idx = result.index
-            chunk = results[original_idx].copy()
-            chunk["rerank_score"] = result.relevance_score
-            reranked.append(chunk)
-
-        return reranked
-
-    except Exception as e:
-        print(f"[cohere] rerank failed: {e}")
-        # Fallback to original order on error
-        return results
+    # Fallback: local, quota-free reranking.
+    return _local_rerank(query, results, top_k)
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +415,9 @@ async def retrieve(
     # Fan out: dense + sparse retrieval for every query variant, all concurrently.
     # Vector lists are gathered ahead of BM25 lists so RRF keeps the vector-side
     # chunk record (which carries relevance_score) on ties.
-    vector_coros = [_vector_search(q, repo_id, top_k=candidate_pool) for q in queries]
+    vector_coros = [
+        _vector_search(q, repo_id, redis_client, top_k=candidate_pool) for q in queries
+    ]
     bm25_coros = [
         search_bm25(q, repo_id, redis_client, top_k=candidate_pool) for q in queries
     ]
