@@ -62,6 +62,15 @@ CHUNK_NODE_TYPES = {
 }
 
 
+# Sliding-window sub-chunking for oversized functions/classes. Anything longer
+# than MAX_CHUNK_LINES is split into WINDOW_LINES-line windows that overlap by
+# OVERLAP_LINES, so a long function is never truncated mid-logic and adjacent
+# windows share context across the cut.
+MAX_CHUNK_LINES = 80
+WINDOW_LINES = 60
+OVERLAP_LINES = 15
+
+
 @dataclass
 class CodeChunk:
     content: str
@@ -142,6 +151,49 @@ def _walk(
             )
 
 
+def _window_starts(total: int, window: int, step: int) -> list[int]:
+    """Sliding-window start offsets covering ``total`` lines with no redundant
+    trailing window. Each window spans ``window`` lines and advances by ``step``;
+    iteration stops as soon as a window reaches the end."""
+    starts = []
+    i = 0
+    while True:
+        starts.append(i)
+        if i + window >= total:
+            break
+        i += step
+    return starts
+
+
+def _split_oversized(chunk: CodeChunk) -> Iterator[CodeChunk]:
+    """Yield ``chunk`` unchanged if it fits, else a series of overlapping
+    sub-chunks. Line numbers are mapped back to the original file and the
+    context prefix is preserved (with a ``part i/n`` marker) so each window keeps
+    its enclosing class/function context."""
+    lines = chunk.content.splitlines()
+    if len(lines) <= MAX_CHUNK_LINES:
+        yield chunk
+        return
+
+    step = WINDOW_LINES - OVERLAP_LINES
+    starts = _window_starts(len(lines), WINDOW_LINES, step)
+    total_parts = len(starts)
+
+    for part, i in enumerate(starts, start=1):
+        window_lines = lines[i : i + WINDOW_LINES]
+        marker = f"part {part}/{total_parts}"
+        yield CodeChunk(
+            content="\n".join(window_lines),
+            context_prefix=f"{chunk.context_prefix} > {marker}",
+            file_path=chunk.file_path,
+            language=chunk.language,
+            chunk_type=chunk.chunk_type,
+            name=f"{chunk.name} ({marker})" if chunk.name else marker,
+            start_line=chunk.start_line + i,
+            end_line=chunk.start_line + i + len(window_lines) - 1,
+        )
+
+
 def chunk_file(file_path: str, source_code: str, language: str) -> list[CodeChunk]:
     parser = get_parser(file_path)
     if parser is None:
@@ -165,4 +217,6 @@ def chunk_file(file_path: str, source_code: str, language: str) -> list[CodeChun
             )
         ]
 
-    return chunks
+    # Split any oversized class/function/module into overlapping sub-chunks so
+    # long bodies aren't truncated mid-logic by the embedding model.
+    return [sub for c in chunks for sub in _split_oversized(c)]
