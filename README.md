@@ -45,12 +45,12 @@ User Query
     |
     +---> Retrieve Node
     |         |
-    |         +---> HyDE (Hypothetical Document Expansion via Groq)
+    |         +---> Multi-Query Fusion (diverse query reformulations via Groq)
     |         |         |
     |         |         v
-    |         +---> Dense Search (Cohere embed-english-v3.0 + Qdrant)
-    |         +---> Sparse Search (BM25 over Redis-cached index)
-    |         +---> RRF Fusion (Reciprocal Rank Fusion)
+    |         +---> Dense Search (Cohere embed-english-v3.0 + Qdrant)  [per query]
+    |         +---> Sparse Search (BM25 over Redis-cached index)       [per query]
+    |         +---> RRF Fusion (Reciprocal Rank Fusion over all result sets)
     |         +---> Cohere Reranking (rerank-english-v3.0)
     |
     +---> Reflect Node (LLM relevance check, up to 2 retries)
@@ -79,13 +79,17 @@ GitHub URL --> Git Clone (shallow) --> File Walk + Language Detection
 
 ### Hybrid Retrieval with RRF Fusion
 Combines dense semantic search (Cohere embeddings in Qdrant) with sparse keyword search
-(BM25 over a Redis-cached token corpus). Both result sets are fused using Reciprocal Rank Fusion
-(k=60, Cormack et al. 2009), capturing results that neither approach would surface alone.
+(BM25 over a Redis-cached token corpus). Every query reformulation produces its own dense and
+sparse result lists, all of which are fused using Reciprocal Rank Fusion (k=60, Cormack et al.
+2009), capturing results that neither approach — nor any single phrasing — would surface alone.
 
-### HyDE — Hypothetical Document Expansion
-Rather than embedding the raw user query, RepoMind first prompts Groq to generate a hypothetical
-code snippet that would answer the question, then embeds that hypothetical. This code-to-code
-matching strategy substantially improves retrieval precision for technical questions.
+### Multi-Query Fusion — Diverse Query Expansion
+Rather than searching with the raw user query alone, RepoMind first prompts Groq — in a single
+LLM call — to generate several semantically diverse reformulations of the question. Each
+reformulation (plus the original) is retrieved independently and the result sets are combined via
+RRF before reranking. Expanding the question into multiple angles substantially improves recall
+for technical questions without multiplying LLM usage. (This replaces the earlier HyDE approach,
+which embedded a single hypothetical code snippet; see `app/query/fusion.py`.)
 
 ### Language-Aware Semantic Chunking
 Source files are parsed using tree-sitter grammars for 13 programming languages. Chunks are
@@ -149,7 +153,7 @@ interactive HTML dashboard with per-question breakdowns and aggregate scores.
 |---|---|
 | Embeddings | Cohere embed-english-v3.0 (1024-dim) |
 | Reranking | Cohere rerank-english-v3.0 |
-| LLM (generation, HyDE, reflection) | Groq llama-3.3-70b-versatile |
+| LLM (generation, query fusion, reflection) | Groq llama-3.3-70b-versatile |
 | BM25 Sparse Retrieval | rank-bm25 0.2.2 |
 
 ### Code Parsing
@@ -201,8 +205,9 @@ CodeBase-Q-A-with-RAG/
 |   |   +-- indexer.py           # Qdrant upsert and BM25 index construction
 |   +-- query/
 |   |   +-- graph.py             # LangGraph retrieval-reflection state machine
-|   |   +-- retriever.py         # Hybrid search (dense + BM25 + RRF + rerank)
-|   |   +-- hyde.py              # Hypothetical Document Expansion via Groq
+|   |   +-- retriever.py         # Hybrid search (multi-query + dense + BM25 + RRF + rerank)
+|   |   +-- fusion.py            # Multi-Query Fusion query expansion via Groq
+|   |   +-- hyde.py              # (retired) Hypothetical Document Expansion — kept for reference
 |   |   +-- answerer.py          # Streaming answer generation with citations
 |   +-- workers/
 |   |   +-- celery_app.py        # Celery application configuration

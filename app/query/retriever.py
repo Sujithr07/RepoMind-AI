@@ -6,7 +6,7 @@ import os
 import re
 import uuid
 import cohere
-from app.query.hyde import generate_hyde
+from app.query.fusion import generate_fusion_queries
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -185,9 +185,12 @@ async def _vector_search(
     repo_id: uuid.UUID,
     top_k: int = 20,
 ) -> list[dict]:
-    """HyDE-expanded dense retrieval against Qdrant."""
-    hypothetical = await generate_hyde(query)
-    vec = await _embed_query(hypothetical)
+    """Dense retrieval against Qdrant for a single (already-expanded) query.
+
+    Query expansion now happens upstream in ``retrieve`` via Multi-Query Fusion,
+    so this just embeds the given query and searches.
+    """
+    vec = await _embed_query(query)
 
     try:
         search_results = qdrant_client.query_points(
@@ -233,25 +236,26 @@ def _chunk_key(chunk: dict) -> tuple:
 
 
 def fuse_rankings(
-    vector_results: list[dict],
-    bm25_results: list[dict],
+    *result_lists: list[dict],
     k: int = 60,
 ) -> list[dict]:
-    """Reciprocal Rank Fusion: score = sum over rankers of 1 / (k + rank + 1).
+    """Reciprocal Rank Fusion over any number of ranked result lists:
+    score = sum over rankers of 1 / (k + rank + 1).
     `k=60` is the canonical constant from Cormack et al. (2009).
+
+    Accepts a variable number of lists so Multi-Query Fusion can fuse the dense +
+    sparse results of every reformulation in one pass. The two-argument hybrid
+    call ``fuse_rankings(vector_results, bm25_results)`` remains valid.
+    The first list a chunk appears in wins the stored record, so put the
+    relevance_score-carrying vector lists ahead of BM25 lists.
     """
     fused: dict[tuple, dict] = {}
 
-    for rank, chunk in enumerate(vector_results):
-        key = _chunk_key(chunk)
-        entry = fused.setdefault(key, {"chunk": chunk, "score": 0.0})
-        entry["score"] += 1.0 / (k + rank + 1)
-
-    for rank, chunk in enumerate(bm25_results):
-        key = _chunk_key(chunk)
-        # Prefer the vector-side chunk record (carries relevance_score) when present.
-        entry = fused.setdefault(key, {"chunk": chunk, "score": 0.0})
-        entry["score"] += 1.0 / (k + rank + 1)
+    for results in result_lists:
+        for rank, chunk in enumerate(results):
+            key = _chunk_key(chunk)
+            entry = fused.setdefault(key, {"chunk": chunk, "score": 0.0})
+            entry["score"] += 1.0 / (k + rank + 1)
 
     ranked = sorted(fused.values(), key=lambda e: e["score"], reverse=True)
     return [
@@ -327,26 +331,35 @@ async def retrieve(
     candidate_pool: int = 20,
     use_rerank: bool = True,
 ) -> list[dict]:
-    """Hybrid retrieval: dense (vector) + sparse (BM25) fused via RRF,
-    optionally reranked with Cohere.
+    """Multi-Query RAG Fusion: expand the question into several diverse queries
+    (one LLM call), run dense (vector) + sparse (BM25) retrieval for each, fuse
+    every result list via RRF, then optionally rerank with Cohere.
 
-    Falls back to vector-only when no BM25 index exists for the repo.
+    Falls back to single-query retrieval when expansion fails, and to vector-only
+    when no BM25 index exists for the repo.
     """
     cache_key = f"query:{hashlib.sha256(f'{query}{repo_id}{top_k}{use_rerank}'.encode()).hexdigest()}"
     cached = await redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
 
-    # Run dense + sparse retrieval concurrently.
-    vector_results, bm25_results = await asyncio.gather(
-        _vector_search(query, repo_id, top_k=candidate_pool),
-        search_bm25(query, repo_id, redis_client, top_k=candidate_pool),
-    )
+    # One LLM call -> diverse reformulations (the original question included).
+    queries = await generate_fusion_queries(query)
 
-    if not vector_results and not bm25_results:
+    # Fan out: dense + sparse retrieval for every query variant, all concurrently.
+    # Vector lists are gathered ahead of BM25 lists so RRF keeps the vector-side
+    # chunk record (which carries relevance_score) on ties.
+    vector_coros = [_vector_search(q, repo_id, top_k=candidate_pool) for q in queries]
+    bm25_coros = [
+        search_bm25(q, repo_id, redis_client, top_k=candidate_pool) for q in queries
+    ]
+    all_results = await asyncio.gather(*vector_coros, *bm25_coros)
+    result_lists = list(all_results)  # vector lists first, then BM25 lists
+
+    if not any(result_lists):
         return []
 
-    fused = fuse_rankings(vector_results, bm25_results)
+    fused = fuse_rankings(*result_lists)
 
     # Rerank with Cohere if enabled and API key is configured
     if use_rerank:

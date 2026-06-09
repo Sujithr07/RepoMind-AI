@@ -43,12 +43,12 @@ TEST_CASES = [
         "ground_truth": "Redis is used for caching query results to improve performance. The retrieve function caches query results for 1 hour using a cache key based on the query, repo_id, and top_k parameters."
     },
     {
-        "question": "What is the purpose of the HyDE expansion?",
-        "ground_truth": "HyDE (Hypothetical Document Embeddings) generates a hypothetical code snippet that would answer the query. This snippet is then embedded instead of the raw question because code embeddings are trained on code-to-code similarity, not natural language to code."
+        "question": "What is the purpose of Multi-Query Fusion?",
+        "ground_truth": "Multi-Query Fusion expands the user's question into several semantically diverse search queries in a single LLM call (via Groq). Each reformulation is retrieved independently and the result sets are combined with Reciprocal Rank Fusion. This surfaces relevant code that a single phrasing of the question would miss, improving recall."
     },
     {
         "question": "How does the retrieval pipeline work?",
-        "ground_truth": "The retrieval pipeline first generates a HyDE snippet, embeds it using Voyage AI, searches Qdrant for top 20 candidates, then reranks them using a CrossEncoder model to select the top_k most relevant chunks."
+        "ground_truth": "The retrieval pipeline expands the question into several diverse queries via Multi-Query Fusion (one Groq call), embeds each query with Cohere embed-english-v3.0 and searches Qdrant, runs BM25 sparse search in parallel, fuses all result sets with Reciprocal Rank Fusion, then reranks the candidates with Cohere rerank-english-v3.0 to select the top_k most relevant chunks."
     },
     {
         "question": "What models are used for embedding?",
@@ -84,7 +84,7 @@ TEST_CASES = [
     },
     {
         "question": "What is the role of LangGraph in this project?",
-        "ground_truth": "LangGraph is used to orchestrate the RAG pipeline as a state machine with nodes for hyde, retrieve, reflect, and answer. It manages the flow between these nodes and handles conditional logic for retries."
+        "ground_truth": "LangGraph orchestrates the RAG pipeline as a state machine with a retrieve node and a reflect node. It manages the flow between them and handles conditional logic for retries; answer generation is streamed separately by the caller."
     },
     {
         "question": "How are embeddings stored and indexed?",
@@ -128,7 +128,7 @@ async def run_rag_pipeline(question: str, repo_id: str, conn: asyncpg.Connection
     Returns:
         Dict with 'answer' (str) and 'contexts' (list of chunk texts)
     """
-    # Step 1: Retrieve chunks (HyDE expansion happens inside `retrieve`)
+    # Step 1: Retrieve chunks (Multi-Query Fusion expansion happens inside `retrieve`)
     chunks = await retrieve(
         query=question,
         repo_id=uuid.UUID(repo_id),

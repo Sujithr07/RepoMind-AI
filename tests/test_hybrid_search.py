@@ -92,6 +92,23 @@ def test_fuse_rankings_promotes_chunks_in_both_lists():
     assert scores == sorted(scores, reverse=True)
 
 
+def test_fuse_rankings_fuses_many_lists_for_multi_query():
+    """RRF must combine more than two ranked lists (one dense+sparse pair per
+    reformulation in Multi-Query Fusion). A chunk that appears across several
+    lists should accumulate score and outrank singletons."""
+    a = _chunk("a.py", "...", 0, 1)
+    b = _chunk("b.py", "...", 0, 1)
+    c = _chunk("c.py", "...", 0, 1)
+
+    # `a` appears at rank 0 in three separate lists; b and c appear once each.
+    fused = fuse_rankings([a], [a], [a], [b], [c], k=60)
+
+    assert {f["file_path"] for f in fused} == {"a.py", "b.py", "c.py"}
+    # a: 3 * 1/61 ; b, c: 1/61 each -> a ranks first.
+    assert fused[0]["file_path"] == "a.py"
+    assert fused[0]["fused_score"] == pytest.approx(3 / 61)
+
+
 def test_fuse_rankings_handles_disjoint_lists():
     a = _chunk("a.py", "...", 0, 1)
     b = _chunk("b.py", "...", 0, 1)

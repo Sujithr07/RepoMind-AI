@@ -28,8 +28,9 @@ class QueryState(TypedDict):
 async def retrieve_node(state: QueryState) -> dict:
     """Retrieve chunks for the question.
 
-    HyDE expansion happens inside `retrieve` (dense path only); BM25 uses the
-    raw question. Passing the raw question here avoids embedding a HyDE-of-HyDE.
+    Multi-Query Fusion happens inside `retrieve`: the raw question is expanded
+    into several reformulations (one LLM call), each retrieved and RRF-fused.
+    Passing the raw question here lets `retrieve` own the expansion.
     """
     real_repo_id = uuid.UUID(state["repo_id"])
     result = await retrieve(
