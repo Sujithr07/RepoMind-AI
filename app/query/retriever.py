@@ -7,7 +7,6 @@ import re
 import uuid
 import cohere
 from app.query.fusion import generate_fusion_queries
-from app.query.hyde import generate_hyde
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -545,27 +544,46 @@ async def retrieve(
     candidate_pool: int = 20,
     use_rerank: bool = True,
     strategy: str = "fusion",
+    attempt: int = 0,
 ) -> list[dict]:
     """Hybrid retrieval with a selectable query-expansion ``strategy``:
 
-      * ``"fusion"`` (default) — Multi-Query RAG Fusion: expand the question into
-        several diverse queries (one LLM call) and run dense + sparse retrieval
-        for each. See app/query/fusion.py.
-      * ``"hyde"`` — Hypothetical Document Embeddings: embed a hypothetical code
-        snippet (one LLM call) for the dense leg, while the sparse/BM25 leg keeps
-        the original question. See app/query/hyde.py.
-      * ``"single"`` — no expansion; retrieve on the raw question only (baseline).
+      * ``"fusion"`` (default, **the only strategy used in production**) —
+        Multi-Query RAG Fusion: expand the question into several diverse queries
+        (one LLM call) and run dense + sparse retrieval for each. The live graph
+        and API never pass anything else. See app/query/fusion.py.
+      * ``"single"`` (ablation baseline) — no expansion; retrieve on the raw
+        question only.
+
+    ``"single"`` exists only for the query-expansion ablation
+    (eval/run_ablation.py); it is not part of the production path. A third
+    strategy, HyDE, was compared in that ablation and has since been retired
+    (it lost to RAG Fusion — see app/query/hyde.py).
 
     Every dense + sparse result list is fused via RRF, then optionally reranked
     with Cohere. Falls back to vector-only when no BM25 index exists for the repo.
     The strategy is part of the cache key, so the three modes never collide — the
     ablation harness (eval/run_ablation.py) relies on this.
+
+    ``attempt`` is the Corrective-RAG retry counter the LangGraph reflection node
+    feeds back in (0 on the first pass). When the reflection node judges the first
+    retrieval insufficient, it re-enters with ``attempt > 0``; each retry widens
+    the candidate pool and final top_k so the graph casts a broader net than the
+    pass that was just rejected — otherwise the retry would re-fetch the same set.
+    ``attempt`` is also part of the cache key, so a widened retry never collides
+    with the first attempt's cached (narrower) result.
     """
+    # A reflection-triggered retry must surface *different*, broader context than
+    # the pass that was just judged insufficient — widen the net per attempt.
+    if attempt > 0:
+        candidate_pool += 20 * attempt
+        top_k += 3 * attempt
+
     # Key is namespaced by repo_id so the whole repo's cache can be scanned and
     # dropped on re-index (see invalidate_query_cache); stale chunks must never
     # outlive a re-index. The hash still folds in repo_id to avoid any collision.
     digest = hashlib.sha256(
-        f'{query}{repo_id}{top_k}{use_rerank}{strategy}'.encode()
+        f'{query}{repo_id}{top_k}{use_rerank}{strategy}{attempt}'.encode()
     ).hexdigest()
     cache_key = f"{QUERY_CACHE_PREFIX}:{repo_id}:{digest}"
     cached = await redis_client.get(cache_key)
@@ -573,16 +591,15 @@ async def retrieve(
         return json.loads(cached)
 
     # Build the dense (embedded) and sparse (BM25) query texts for this strategy.
-    # HyDE reshapes only the dense leg — the hypothetical snippet's identifiers
-    # are noisy keyword signal, so BM25 stays on the real question.
-    if strategy == "hyde":
-        hyde_doc = await generate_hyde(query)
-        dense_texts = [hyde_doc]
-        sparse_texts = [query]
-    elif strategy == "single":
+    # PRODUCTION ALWAYS TAKES THE "fusion" BRANCH — it is the default and the only
+    # value the live graph/API ever passes. "single" is reached only from the
+    # query-expansion ablation (eval/run_ablation.py). (HyDE was a third ablation
+    # strategy, now retired — see app/query/hyde.py.)
+    if strategy == "single":
+        # Ablation baseline only: no query expansion.
         dense_texts = [query]
         sparse_texts = [query]
-    else:  # "fusion": one LLM call -> diverse reformulations (original included).
+    else:  # "fusion" (production): one LLM call -> diverse reformulations.
         queries = await generate_fusion_queries(query)
         dense_texts = queries
         sparse_texts = queries

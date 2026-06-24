@@ -53,7 +53,8 @@ User Query
     |         +---> RRF Fusion (Reciprocal Rank Fusion over all result sets)
     |         +---> Cohere Reranking (rerank-english-v3.0)
     |
-    +---> Reflect Node (LLM relevance check, up to 2 retries)
+    +---> Reflect Node (Corrective-RAG: LLM grades context; on a low-relevance
+    |                   verdict, re-retrieve with a widened pool, up to 2 retries)
     |
     v
  Answer Streaming (Groq llama-3.3-70b-versatile via SSE)
@@ -103,10 +104,13 @@ top 5 are passed to generation. If the Cohere API is unavailable or rate-limited
 degrades automatically to a local cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`) that runs
 offline and consumes no API quota — so retrieval quality never hard-fails on a quota limit.
 
-### LangGraph Retrieval-Reflection Loop
-Retrieval is orchestrated as a LangGraph state machine. A reflection node uses Groq to evaluate
-whether the retrieved chunks are genuinely relevant to the query. If not, the graph retries
-retrieval with an adjusted strategy, up to a maximum of two retry attempts.
+### LangGraph Corrective-RAG Loop
+Retrieval is orchestrated as a LangGraph state machine implementing a Corrective-RAG (CRAG)
+pattern. A reflection node uses Groq to grade whether the top retrieved chunks are genuinely
+relevant to the query. On a low-relevance verdict, the graph re-enters the retrieve node with a
+*widened* candidate pool and final top-k (and a distinct cache key, so the retry surfaces broader
+context rather than re-fetching the rejected set), bounded to two retry attempts. If the judge
+itself errors, the graph fails open — it keeps the existing chunks rather than spending a retry.
 
 ### Streaming Answer Generation
 Answers are streamed token-by-token to the frontend via Server-Sent Events (SSE) using
@@ -209,7 +213,7 @@ CodeBase-Q-A-with-RAG/
 |   |   +-- graph.py             # LangGraph retrieval-reflection state machine
 |   |   +-- retriever.py         # Hybrid search (multi-query + dense + BM25 + RRF + rerank)
 |   |   +-- fusion.py            # Multi-Query Fusion query expansion via Groq
-|   |   +-- hyde.py              # (retired) Hypothetical Document Expansion — kept for reference
+|   |   +-- hyde.py              # HyDE — RETIRED dormant stub (lost to RAG Fusion in the ablation); not imported
 |   |   +-- answerer.py          # Streaming answer generation with citations
 |   +-- workers/
 |   |   +-- celery_app.py        # Celery application configuration
@@ -268,9 +272,12 @@ Results are saved to `eval/results.json`.
 ### Query-Expansion Ablation — Single vs HyDE vs RAG Fusion
 
 To quantify what the query-expansion stage actually contributes, the retriever
-exposes a `strategy` parameter (`single` | `hyde` | `fusion`), and
-`eval/run_ablation.py` scores each strategy over the 15-question test set with
-RAGAS **Context Recall** (a retrieval-quality metric) and **Faithfulness**.
+exposes a `strategy` parameter, and `eval/run_ablation.py` scores each strategy
+over the 15-question test set with RAGAS **Context Recall** (a retrieval-quality
+metric) and **Faithfulness**. The original run compared three strategies —
+single-query, HyDE, and RAG Fusion; on the strength of the result below **HyDE
+has since been retired** (it lost to RAG Fusion), so the toggle now exposes
+`single` | `fusion` and the live pipeline uses RAG Fusion only.
 
 **Setup.** Target repo: RepoMind's own codebase (~115 chunks), so the questions
 are answerable from it. Reranking is **deliberately disabled** for this

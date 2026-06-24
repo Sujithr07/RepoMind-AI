@@ -1,9 +1,13 @@
-"""Query-expansion ablation: single-query vs HyDE vs RAG Fusion.
+"""Query-expansion ablation: single-query baseline vs RAG Fusion.
 
 Runs the live RAG pipeline over the curated test set (eval/run_ragas.py's
-TEST_CASES) three times — once per retrieval ``strategy`` — and scores each with
-RAGAS Faithfulness and (LLM) Context Recall, using Groq llama-3.3-70b as the
-judge. Both metrics are LLM-only, so no OpenAI embedding key is required.
+TEST_CASES) once per retrieval ``strategy`` and scores each with RAGAS
+Faithfulness and (LLM) Context Recall, using Groq as the judge. Both metrics are
+LLM-only, so no OpenAI embedding key is required.
+
+(A third strategy, HyDE, was part of the original ablation but has since been
+retired — see app/query/hyde.py. To re-include it, restore generate_hyde and add
+"hyde" back to STRATEGIES below and the strategy branch in retriever.retrieve.)
 
 The point is a *relative* comparison on the same indexed repo: which query
 expansion retrieves context that best supports the ground-truth answer
@@ -46,7 +50,7 @@ _run_ragas = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_run_ragas)
 TEST_CASES = _run_ragas.TEST_CASES
 
-STRATEGIES = ["single", "hyde", "fusion"]
+STRATEGIES = ["single", "fusion"]
 
 
 def _dsn() -> str:
@@ -205,8 +209,7 @@ def main():
             scores[strategy] = {"faithfulness": float("nan"),
                                 "context_recall": float("nan"), "error": str(e)}
 
-    label = {"single": "Single query (baseline)", "hyde": "HyDE",
-             "fusion": "RAG Fusion"}
+    label = {"single": "Single query (baseline)", "fusion": "RAG Fusion"}
     print("\n" + "=" * 64)
     print("ABLATION RESULTS  (repo_id=%s)" % repo_id)
     print("=" * 64)

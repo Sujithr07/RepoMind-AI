@@ -32,6 +32,11 @@ async def retrieve_node(state: QueryState) -> dict:
     Multi-Query Fusion happens inside `retrieve`: the raw question is expanded
     into several reformulations (one LLM call), each retrieved and RRF-fused.
     Passing the raw question here lets `retrieve` own the expansion.
+
+    On a reflection-triggered retry (``retry_count > 0``), the current attempt is
+    forwarded to ``retrieve`` so it widens the candidate pool and dodges the first
+    pass's cache — the Corrective-RAG retry must surface broader context than the
+    set the reflection node just rejected.
     """
     real_repo_id = uuid.UUID(state["repo_id"])
     result = await retrieve(
@@ -39,6 +44,7 @@ async def retrieve_node(state: QueryState) -> dict:
         real_repo_id,
         state["conn"],
         state["redis_client"],
+        attempt=state["retry_count"],
     )
     return {"chunks": result}
 
@@ -48,8 +54,9 @@ async def reflect_node(state: QueryState) -> dict:
     question = state["question"]
     chunks = state["chunks"]
 
-    # Take first 2 chunks for reflection
-    chunks_preview = chunks[:2] if chunks else []
+    # Grade the top-ranked chunks (post-rerank) the answerer will actually use,
+    # not just the single best — the verdict should reflect the working context.
+    chunks_preview = chunks[:4] if chunks else []
     chunks_text = "\n\n".join([c.get("content", "") for c in chunks_preview])
 
     prompt = f"Given the question: {question} and these retrieved chunks: {chunks_text}, are the chunks relevant? Reply with only YES or NO."
@@ -67,8 +74,10 @@ async def reflect_node(state: QueryState) -> dict:
         # Groq's client is sync; run it off the event loop so it doesn't block.
         result = await asyncio.to_thread(_call)
     except Exception as e:
+        # Fail open: if the judge itself errors, don't burn a retry re-retrieving —
+        # treat the existing chunks as good enough and let answering proceed.
         print(f"Reflection failed: {e}")
-        result = "YES"  # Default to YES on error
+        result = "YES"
 
     return {"retry_count": state["retry_count"] + 1, "_reflection_result": result}
 
