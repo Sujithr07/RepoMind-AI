@@ -1,0 +1,43 @@
+{
+  "repo_id": "a4bf1638-a875-4abc-a81e-ae8a9b3c3cc5",
+  "scores": {
+    "single": {
+      "faithfulness": 0.7725340136054422,
+      "faithfulness_scored": 14,
+      "context_recall": 0.7976190476190476,
+      "context_recall_scored": 14,
+      "n": 15
+    },
+    "hyde": {
+      "faithfulness": 0.8121794871794872,
+      "faithfulness_scored": 13,
+      "context_recall": 0.6738095238095239,
+      "context_recall_scored": 14,
+      "n": 15
+    },
+    "fusion": {
+      "faithfulness": 0.7931122448979592,
+      "faithfulness_scored": 14,
+      "context_recall": 0.6923076923076923,
+      "context_recall_scored": 13,
+      "n": 15
+    }
+  },
+  "test_set": [
+    "How do I add a new API endpoint?",
+    "What does the chunker return?",
+    "How is Redis used in this project?",
+    "What is the purpose of Multi-Query Fusion?",
+    "How does the retrieval pipeline work?",
+    "What models are used for embedding?",
+    "How is the database connection managed?",
+    "What is the purpose of the reflection node?",
+    "How does the answer generation work?",
+    "What is the chunk size and overlap strategy?",
+    "How are webhooks handled?",
+    "What is the retry mechanism in the query graph?",
+    "How is conversation history managed?",
+    "What is the role of LangGraph in this project?",
+    "How are embeddings stored and indexed?"
+  ]
+}

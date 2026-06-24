@@ -11,6 +11,7 @@ from app.query.retriever import retrieve
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 client = Groq(api_key=GROQ_API_KEY)
 
 
@@ -55,7 +56,7 @@ async def reflect_node(state: QueryState) -> dict:
 
     def _call() -> str:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=10,

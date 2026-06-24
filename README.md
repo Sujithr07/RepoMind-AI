@@ -265,5 +265,48 @@ python eval/run_ragas.py
 
 Results are saved to `eval/results.json`.
 
+### Query-Expansion Ablation — Single vs HyDE vs RAG Fusion
+
+To quantify what the query-expansion stage actually contributes, the retriever
+exposes a `strategy` parameter (`single` | `hyde` | `fusion`), and
+`eval/run_ablation.py` scores each strategy over the 15-question test set with
+RAGAS **Context Recall** (a retrieval-quality metric) and **Faithfulness**.
+
+**Setup.** Target repo: RepoMind's own codebase (~115 chunks), so the questions
+are answerable from it. Reranking is **deliberately disabled** for this
+experiment to isolate the query-expansion variable — with the Cohere reranker on,
+it re-scores candidates against the original query and collapses the final top-k
+to nearly the same chunks regardless of how they were retrieved, masking the
+effect under study. Judge + generation model: `llama-3.1-8b-instant` (production
+default is `llama-3.3-70b-versatile`; 8B was used here only because the 70B daily
+token quota was exhausted). n = 15 questions; 1–2 samples per cell were dropped to
+judge timeouts.
+
+| Query strategy           | Context Recall | Faithfulness |
+|--------------------------|:--------------:|:------------:|
+| Single query (baseline)  |   **0.798**    |    0.773     |
+| HyDE                     |     0.674      |  **0.812**   |
+| RAG Fusion               |     0.692      |    0.793     |
+
+**Honest reading.** On this small corpus, query expansion did **not** improve
+context recall — the single-query baseline was actually best, with HyDE and RAG
+Fusion landing slightly lower; faithfulness was comparable across all three
+(0.77–0.81, within noise). The most plausible explanation: when the corpus is
+small and the questions are literal, the raw question already retrieves the
+relevant chunks, and RRF over several reformulations can dilute the top-k by
+favouring chunks that are broadly relevant across reformulations over the single
+chunk that best answers the literal question. Expansion is expected to pay off on
+larger codebases where one phrasing misses relevant code — a hypothesis this
+benchmark does not yet test.
+
+**Caveats.** Small test set (n = 15), a single repo, and an 8B judge make these
+numbers *suggestive, not conclusive* — the ~0.1 gaps are within plausible noise
+at this sample size. RAG Fusion remains the production default (it also improves
+the sparse/BM25 leg and composes with the reranker on top), but this benchmark
+does not, on its own, justify expansion on a repo this small.
+
+Re-run with `python eval/run_ablation.py <ready_repo_id>` (set `GROQ_MODEL` to
+override the judge/generation model).
+
 ---
 

@@ -17,6 +17,7 @@ from groq import Groq
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 client = Groq(api_key=GROQ_API_KEY)
 
 # Number of reformulations to request. The original question is always added on
@@ -49,7 +50,7 @@ async def generate_fusion_queries(query: str, n: int = NUM_QUERIES) -> list[str]
     def _call() -> str:
         # Groq's SDK is synchronous; run it off the event loop.
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT.format(n=n)},
                 {"role": "user", "content": query},

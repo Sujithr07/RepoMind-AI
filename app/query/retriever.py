@@ -7,6 +7,7 @@ import re
 import uuid
 import cohere
 from app.query.fusion import generate_fusion_queries
+from app.query.hyde import generate_hyde
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -543,25 +544,48 @@ async def retrieve(
     top_k: int = 5,
     candidate_pool: int = 20,
     use_rerank: bool = True,
+    strategy: str = "fusion",
 ) -> list[dict]:
-    """Multi-Query RAG Fusion: expand the question into several diverse queries
-    (one LLM call), run dense (vector) + sparse (BM25) retrieval for each, fuse
-    every result list via RRF, then optionally rerank with Cohere.
+    """Hybrid retrieval with a selectable query-expansion ``strategy``:
 
-    Falls back to single-query retrieval when expansion fails, and to vector-only
-    when no BM25 index exists for the repo.
+      * ``"fusion"`` (default) — Multi-Query RAG Fusion: expand the question into
+        several diverse queries (one LLM call) and run dense + sparse retrieval
+        for each. See app/query/fusion.py.
+      * ``"hyde"`` — Hypothetical Document Embeddings: embed a hypothetical code
+        snippet (one LLM call) for the dense leg, while the sparse/BM25 leg keeps
+        the original question. See app/query/hyde.py.
+      * ``"single"`` — no expansion; retrieve on the raw question only (baseline).
+
+    Every dense + sparse result list is fused via RRF, then optionally reranked
+    with Cohere. Falls back to vector-only when no BM25 index exists for the repo.
+    The strategy is part of the cache key, so the three modes never collide — the
+    ablation harness (eval/run_ablation.py) relies on this.
     """
     # Key is namespaced by repo_id so the whole repo's cache can be scanned and
     # dropped on re-index (see invalidate_query_cache); stale chunks must never
     # outlive a re-index. The hash still folds in repo_id to avoid any collision.
-    digest = hashlib.sha256(f'{query}{repo_id}{top_k}{use_rerank}'.encode()).hexdigest()
+    digest = hashlib.sha256(
+        f'{query}{repo_id}{top_k}{use_rerank}{strategy}'.encode()
+    ).hexdigest()
     cache_key = f"{QUERY_CACHE_PREFIX}:{repo_id}:{digest}"
     cached = await redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
 
-    # One LLM call -> diverse reformulations (the original question included).
-    queries = await generate_fusion_queries(query)
+    # Build the dense (embedded) and sparse (BM25) query texts for this strategy.
+    # HyDE reshapes only the dense leg — the hypothetical snippet's identifiers
+    # are noisy keyword signal, so BM25 stays on the real question.
+    if strategy == "hyde":
+        hyde_doc = await generate_hyde(query)
+        dense_texts = [hyde_doc]
+        sparse_texts = [query]
+    elif strategy == "single":
+        dense_texts = [query]
+        sparse_texts = [query]
+    else:  # "fusion": one LLM call -> diverse reformulations (original included).
+        queries = await generate_fusion_queries(query)
+        dense_texts = queries
+        sparse_texts = queries
 
     # Path fast-path: if the question names a specific file, fetch that file's
     # chunks directly by metadata so content-based ranking can't miss them.
@@ -576,10 +600,10 @@ async def retrieve(
     # Vector lists are gathered ahead of BM25 lists so RRF keeps the vector-side
     # chunk record (which carries relevance_score) on ties.
     vector_coros = [
-        _vector_search(q, repo_id, redis_client, top_k=candidate_pool) for q in queries
+        _vector_search(t, repo_id, redis_client, top_k=candidate_pool) for t in dense_texts
     ]
     bm25_coros = [
-        search_bm25(q, repo_id, redis_client, top_k=candidate_pool) for q in queries
+        search_bm25(t, repo_id, redis_client, top_k=candidate_pool) for t in sparse_texts
     ]
     all_results = await asyncio.gather(*vector_coros, *bm25_coros)
     # Path matches lead the lists so RRF keeps their record and ranks them high.

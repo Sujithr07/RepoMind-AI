@@ -9,6 +9,7 @@ from groq import Groq
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 client = Groq(api_key=GROQ_API_KEY)
 
 SYSTEM_PROMPT = (
@@ -103,7 +104,7 @@ async def stream_answer(query: str, chunks: list[dict], history: list = None) ->
 
     try:
         stream = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=messages,
             temperature=0.1,
             max_tokens=1500,
