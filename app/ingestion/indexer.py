@@ -16,7 +16,11 @@ from qdrant_client.models import (
     MatchAny,
 )
 from app.ingestion.chunker import CodeChunk
-from app.query.retriever import build_bm25_index, merge_bm25_index
+from app.query.retriever import (
+    build_bm25_index,
+    merge_bm25_index,
+    invalidate_query_cache,
+)
 
 load_dotenv()
 
@@ -79,6 +83,27 @@ async def list_indexed_files(repo_id: str) -> list[str]:
         if next_offset is None:
             break
     return sorted(paths)
+
+
+async def delete_all_chunks_for_repo(
+    conn: asyncpg.Connection,
+    repo_id: str,
+) -> None:
+    """Delete every Qdrant point and DB row for a repo.
+
+    Called before a full re-index so stale vectors from a previous index don't
+    accumulate as duplicates (point IDs are random UUIDs, so upserts never
+    overwrite the old points). Safe to call when nothing is indexed yet.
+    """
+    await _ensure_collection()
+    await qdrant_client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=Filter(
+            must=[FieldCondition(key="repo_id", match=MatchValue(value=repo_id))]
+        ),
+    )
+    await conn.execute("DELETE FROM chunks WHERE repo_id = $1::uuid", repo_id)
+    print(f"[indexer] purged all existing chunks for repo {repo_id} (full reindex)")
 
 
 async def delete_chunks_for_files(
@@ -176,6 +201,9 @@ async def upsert_chunks(
             await build_bm25_index(chunks, repo_id, redis_client)
         else:
             await merge_bm25_index(chunks, replaced_file_paths, repo_id, redis_client)
+        # Drop cached retrieval results so queries can't return chunks ranked
+        # against the pre-reindex corpus.
+        await invalidate_query_cache(repo_id, redis_client)
     except Exception as e:
         # BM25 is best-effort: if it fails, retrieval falls back to vector-only.
         print(f"[indexer] BM25 index build failed for repo {repo_id}: {e}")

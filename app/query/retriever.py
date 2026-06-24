@@ -24,6 +24,9 @@ COLLECTION_NAME = "codebase_chunks"
 
 # Redis key prefix for the per-repo BM25 index payload
 BM25_KEY_PREFIX = "bm25_index"
+# Redis key prefix for cached retrieval results, namespaced by repo_id so a
+# re-index can drop just that repo's cache (keys: "query_cache:{repo_id}:{hash}").
+QUERY_CACHE_PREFIX = "query_cache"
 _TOKEN_RE = re.compile(r"[\W_]+")
 
 EMBED_MODEL = "embed-english-v3.0"
@@ -83,6 +86,17 @@ def _tokenize(text: str) -> list[str]:
     return [tok for tok in _TOKEN_RE.split(text.lower()) if tok]
 
 
+def _tokenize_record(record: dict) -> list[str]:
+    """Tokens for a BM25 record: the context prefix (which carries the file
+    path, e.g. ``src/detector/coding.py > Foo > bar``) plus the chunk content.
+
+    Indexing the prefix is what lets keyword search match file-targeted
+    questions ("explain coding.py") — the path tokens (``coding``, ``detector``)
+    become searchable instead of living only in unindexed metadata.
+    """
+    return _tokenize(f"{record.get('context_prefix', '')} {record['content']}")
+
+
 # ---------------------------------------------------------------------------
 # BM25 index lifecycle
 # ---------------------------------------------------------------------------
@@ -113,7 +127,7 @@ async def build_bm25_index(chunks: list, repo_id, redis_client) -> BM25Okapi:
     Building BM25 is O(N * tokens) and fast enough to do per query.
     """
     records = [_chunk_to_record(c) for c in chunks]
-    tokenized = [_tokenize(r["content"]) for r in records]
+    tokenized = [_tokenize_record(r) for r in records]
 
     payload = json.dumps({"chunks": records, "tokenized": tokenized})
     await redis_client.set(f"{BM25_KEY_PREFIX}:{repo_id}", payload)
@@ -152,7 +166,7 @@ async def merge_bm25_index(
 
     new_records = [_chunk_to_record(c) for c in new_chunks]
     all_records = kept + new_records
-    tokenized = [_tokenize(r["content"]) for r in all_records]
+    tokenized = [_tokenize_record(r) for r in all_records]
 
     payload = json.dumps({"chunks": all_records, "tokenized": tokenized})
     await redis_client.set(f"{BM25_KEY_PREFIX}:{repo_id}", payload)
@@ -386,6 +400,139 @@ def rerank_with_cohere(
 
 
 # ---------------------------------------------------------------------------
+# Path-aware fast path
+# ---------------------------------------------------------------------------
+# Filenames ending in a supported code extension, with optional directory parts:
+# matches "src/detector/coding.py" and a bare "coding.py" alike.
+_FILE_REF_RE = re.compile(
+    r"[\w./\\-]*\.(?:py|js|jsx|ts|tsx|java|go|rs|cpp|cc|cxx|c|rb|cs|php|scala)\b",
+    re.IGNORECASE,
+)
+# Bound the scan so a file-mentioning query can't trigger a full sweep of a huge repo.
+_PATH_SCAN_LIMIT = 5000
+
+
+def _extract_file_refs(query: str) -> list[str]:
+    """Pull file-path-looking tokens out of a query, normalised to forward
+    slashes (e.g. 'src/detector/coding.py' or 'coding.py'). Returns [] if none.
+    """
+    refs = []
+    for m in _FILE_REF_RE.finditer(query):
+        ref = m.group(0).replace("\\", "/").lstrip("./")
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _path_matches(file_path: str, refs: list[str]) -> bool:
+    """True if a stored path equals a ref or ends with '/<ref>', so a bare
+    'coding.py' matches 'src/detector/coding.py' while staying anchored on a
+    path segment (so 'coding.py' never matches 'encoding.py')."""
+    norm = file_path.replace("\\", "/")
+    return any(norm == ref or norm.endswith("/" + ref) for ref in refs)
+
+
+def _search_by_path(
+    refs: list[str],
+    repo_id: uuid.UUID,
+    top_k: int = 20,
+) -> list[dict]:
+    """Directly fetch chunks whose file_path matches a filename named in the query.
+
+    Dense and BM25 search both rank on code *content*, so a question that names a
+    file ("explain src/detector/coding.py") can miss that file's chunks entirely.
+    This metadata fast-path scrolls the repo's chunks for the named file and
+    returns them ordered by start_line, guaranteeing they enter the candidate
+    pool regardless of how their content scores semantically.
+    """
+    matched: list[dict] = []
+    scanned = 0
+    next_offset = None
+    flt = Filter(
+        must=[FieldCondition(key="repo_id", match=MatchValue(value=str(repo_id)))]
+    )
+    try:
+        while scanned < _PATH_SCAN_LIMIT:
+            points, next_offset = qdrant_client.scroll(
+                collection_name=COLLECTION_NAME,
+                scroll_filter=flt,
+                with_payload=True,
+                with_vectors=False,
+                limit=512,
+                offset=next_offset,
+            )
+            scanned += len(points)
+            for p in points:
+                payload = p.payload or {}
+                if _path_matches(payload.get("file_path", ""), refs):
+                    matched.append(
+                        {
+                            "content": payload["content"],
+                            "context_prefix": payload["context_prefix"],
+                            "file_path": payload["file_path"],
+                            "start_line": payload["start_line"],
+                            "end_line": payload["end_line"],
+                            "relevance_score": None,
+                        }
+                    )
+            if next_offset is None:
+                break
+    except Exception as e:
+        print(f"[retriever] path fast-path scan failed: {e}")
+        return []
+
+    matched.sort(key=lambda c: c["start_line"])
+    return matched[:top_k]
+
+
+def _merge_prioritized(
+    priority: list[dict],
+    rest: list[dict],
+    top_k: int,
+) -> list[dict]:
+    """Put ``priority`` chunks first, then fill remaining slots from ``rest``,
+    deduping on chunk identity. Used to guarantee an explicitly named file leads
+    the results even if the content reranker would otherwise bury it."""
+    merged: list[dict] = []
+    seen: set[tuple] = set()
+    for chunk in [*priority, *rest]:
+        key = _chunk_key(chunk)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(chunk)
+        if len(merged) >= top_k:
+            break
+    return merged
+
+
+async def invalidate_query_cache(repo_id, redis_client) -> int:
+    """Delete all cached retrieval results for a repo.
+
+    Called after (re)indexing so a query never returns chunks cached against a
+    stale index. Uses SCAN (non-blocking) to collect the repo's namespaced keys,
+    then deletes them in batches. Best-effort: returns the number of keys removed
+    and swallows Redis errors so a cache hiccup never fails indexing.
+    """
+    pattern = f"{QUERY_CACHE_PREFIX}:{repo_id}:*"
+    removed = 0
+    try:
+        batch: list[str] = []
+        async for key in redis_client.scan_iter(match=pattern, count=512):
+            batch.append(key)
+            if len(batch) >= 512:
+                removed += await redis_client.delete(*batch)
+                batch = []
+        if batch:
+            removed += await redis_client.delete(*batch)
+    except Exception as e:
+        print(f"[retriever] query-cache invalidation failed for {repo_id}: {e}")
+        return removed
+    print(f"[retriever] invalidated {removed} cached queries for repo {repo_id}")
+    return removed
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 async def retrieve(
@@ -404,13 +551,26 @@ async def retrieve(
     Falls back to single-query retrieval when expansion fails, and to vector-only
     when no BM25 index exists for the repo.
     """
-    cache_key = f"query:{hashlib.sha256(f'{query}{repo_id}{top_k}{use_rerank}'.encode()).hexdigest()}"
+    # Key is namespaced by repo_id so the whole repo's cache can be scanned and
+    # dropped on re-index (see invalidate_query_cache); stale chunks must never
+    # outlive a re-index. The hash still folds in repo_id to avoid any collision.
+    digest = hashlib.sha256(f'{query}{repo_id}{top_k}{use_rerank}'.encode()).hexdigest()
+    cache_key = f"{QUERY_CACHE_PREFIX}:{repo_id}:{digest}"
     cached = await redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
 
     # One LLM call -> diverse reformulations (the original question included).
     queries = await generate_fusion_queries(query)
+
+    # Path fast-path: if the question names a specific file, fetch that file's
+    # chunks directly by metadata so content-based ranking can't miss them.
+    file_refs = _extract_file_refs(query)
+    path_results = (
+        await asyncio.to_thread(_search_by_path, file_refs, repo_id, candidate_pool)
+        if file_refs
+        else []
+    )
 
     # Fan out: dense + sparse retrieval for every query variant, all concurrently.
     # Vector lists are gathered ahead of BM25 lists so RRF keeps the vector-side
@@ -422,7 +582,8 @@ async def retrieve(
         search_bm25(q, repo_id, redis_client, top_k=candidate_pool) for q in queries
     ]
     all_results = await asyncio.gather(*vector_coros, *bm25_coros)
-    result_lists = list(all_results)  # vector lists first, then BM25 lists
+    # Path matches lead the lists so RRF keeps their record and ranks them high.
+    result_lists = ([path_results] if path_results else []) + list(all_results)
 
     if not any(result_lists):
         return []
@@ -437,6 +598,12 @@ async def retrieve(
         results = reranked[:top_k] if reranked else fused[:top_k]
     else:
         results = fused[:top_k]
+
+    # If the user named a file, ensure its chunks lead the results — the content
+    # reranker scores on code, not paths, and could otherwise drop the very file
+    # that was asked about.
+    if path_results:
+        results = _merge_prioritized(path_results, results, top_k)
 
     # Cache for 1 hour; guard against non-serialisable floats (NaN/inf)
     await redis_client.setex(

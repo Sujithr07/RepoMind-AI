@@ -9,7 +9,11 @@ from dotenv import load_dotenv
 from app.ingestion.cloner import clone_repo, walk_code_files, cleanup_repo
 from app.ingestion.chunker import chunk_file
 from app.ingestion.embedder import embed_chunks
-from app.ingestion.indexer import upsert_chunks, delete_chunks_for_files
+from app.ingestion.indexer import (
+    upsert_chunks,
+    delete_chunks_for_files,
+    delete_all_chunks_for_repo,
+)
 from app.workers.progress import ProgressPublisher
 
 load_dotenv()
@@ -128,6 +132,27 @@ async def _index_repo(repo_id: str, github_url: str):
             files = [f for f in files if f[0].replace("\\", "/") in changed_files]
 
         total_files = len(files)
+
+        # Delta re-index with no code files to (re)embed: nothing new to add. But
+        # changed_files may include deleted/renamed files whose stale chunks must
+        # still be evicted. Do that, advance the commit pointer, and finish —
+        # rather than reporting a misleading "0 chunks".
+        if changed_files is not None and total_files == 0:
+            if changed_files:
+                await delete_chunks_for_files(conn, repo_id, changed_files)
+            await conn.execute(
+                """
+                UPDATE repos
+                SET status = 'ready', indexed_at = now(), last_commit_sha = $2
+                WHERE id = $1::uuid
+                """,
+                repo_id,
+                new_sha,
+            )
+            await progress.publish("done", "No code changes to index — index is up to date")
+            print(f"[indexer] no code files to (re)embed for repo {repo_id}; done")
+            return
+
         await progress.publish(
             "chunking", f"Parsing {total_files} files…", current=0, total=total_files
         )
@@ -187,6 +212,9 @@ async def _index_repo(repo_id: str, github_url: str):
                 replaced_file_paths=changed_files,
             )
         else:
+            # Full index: purge any prior vectors for this repo first so a
+            # re-index replaces rather than duplicates them.
+            await delete_all_chunks_for_repo(conn, repo_id)
             embeddings = await embed_chunks(all_chunks, progress_cb=embed_progress)
             await progress.publish("upserting", "Storing vectors & search index…")
             await upsert_chunks(conn, repo_id, all_chunks, embeddings)

@@ -93,8 +93,10 @@ def walk_code_files(repo_path: Path) -> Iterator[tuple[str, str, str]]:
                 print(f"[cloner] could not read {file_path}: {e}")
                 continue
 
-            # Relative path from repo root — used as context prefix
-            relative_path = str(file_path.relative_to(repo_path))
+            # Relative path from repo root — used as context prefix. as_posix()
+            # forces forward slashes so stored paths, the BM25 corpus, and
+            # user queries (which use '/') all agree regardless of host OS.
+            relative_path = file_path.relative_to(repo_path).as_posix()
             language = SUPPORTED_EXTENSIONS[ext]
 
             yield relative_path, source, language

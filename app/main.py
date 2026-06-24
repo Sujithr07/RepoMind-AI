@@ -104,6 +104,16 @@ async def add_repo(body: AddRequest):
             "SELECT id, status FROM repos WHERE github_url = $1", body.github_url
         )
         if existing:
+            # A previously-failed index can otherwise never be retried via this
+            # endpoint. Re-enqueue it as a fresh full index; leave repos that are
+            # already pending/indexing/ready untouched.
+            if existing["status"] == "error":
+                await conn.execute(
+                    "UPDATE repos SET status = 'pending', last_commit_sha = NULL WHERE id = $1::uuid",
+                    existing["id"],
+                )
+                index_repo_task.delay(str(existing["id"]), body.github_url)
+                return {"repo_id": str(existing["id"]), "status": "pending"}
             return {"repo_id": str(existing["id"]), "status": existing["status"]}
         
         repo_id = uuid.uuid4()
@@ -199,7 +209,12 @@ async def repo_progress(websocket: WebSocket, repo_id: str):
 
 @app.post("/repos/{repo_id}/reindex")
 async def reindex_repo(repo_id: str):
-    """Reset repo status and re-trigger indexing (useful when Qdrant data is lost)."""
+    """Reset repo status and re-trigger indexing (useful when Qdrant data is lost).
+
+    Clears ``last_commit_sha`` so the worker performs a *full* re-index. Without
+    this, the delta path would diff HEAD against the old (unchanged) commit, find
+    no changes, and index nothing — defeating the purpose of reindexing.
+    """
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT id, github_url FROM repos WHERE id = $1::uuid", repo_id
@@ -207,7 +222,8 @@ async def reindex_repo(repo_id: str):
         if not row:
             raise HTTPException(status_code=404, detail="Repo not found")
         await conn.execute(
-            "UPDATE repos SET status = 'pending', indexed_at = NULL WHERE id = $1::uuid", repo_id
+            "UPDATE repos SET status = 'pending', indexed_at = NULL, last_commit_sha = NULL WHERE id = $1::uuid",
+            repo_id,
         )
     index_repo_task.delay(repo_id, str(row["github_url"]))
     return {"repo_id": repo_id, "status": "pending"}

@@ -1041,8 +1041,15 @@
 
       const repo = repos.get(id);
       if (repo) {
-        if (evt.phase === 'done')  repo.status = 'ready';
-        else if (evt.phase === 'error') repo.status = 'error';
+        if (evt.phase === 'done') {
+          repo.status = 'ready';
+          const btn = document.getElementById('reindexBtn');
+          if (btn) { btn.disabled = false; btn.textContent = '↺ Re-index'; }
+        } else if (evt.phase === 'error') {
+          repo.status = 'error';
+          const btn = document.getElementById('reindexBtn');
+          if (btn) { btn.disabled = false; btn.textContent = '↺ Re-index'; }
+        }
         else repo.status = 'indexing'; // advance pending→indexing immediately on first WS event
       }
       if (activeId === id) renderProgress();
