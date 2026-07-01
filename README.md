@@ -13,8 +13,7 @@ citation-backed answers using a multi-stage retrieval and generation pipeline.
 - [Key Features](#key-features)
 - [Technologies Used](#technologies-used)
 - [Project Structure](#project-structure)
-- [Installation and Setup](#installation-and-setup)
-- [Usage](#usage)
+- [API Reference](#api-reference)
 - [Evaluation](#evaluation)
 
 ---
@@ -67,7 +66,7 @@ User Query
 
 ```
 GitHub URL --> Git Clone (shallow) --> File Walk + Language Detection
-    --> AST-based Semantic Chunking (tree-sitter, 13 languages)
+    --> AST-based Semantic Chunking (tree-sitter, 12 languages)
     --> Batch Embedding (Cohere embed-english-v3.0, batch_size=96)
     --> Qdrant Upsert (dense vectors, 1024-dim, cosine distance)
     --> BM25 Index Build + Redis Cache
@@ -92,10 +91,19 @@ RRF before reranking. Expanding the question into multiple angles substantially 
 for technical questions without multiplying LLM usage. (This replaces the earlier HyDE approach,
 which embedded a single hypothetical code snippet; see `app/query/fusion.py`.)
 
+### Path-Aware Retrieval Fast Path
+Dense and BM25 search both rank on code *content*, so a question that names a specific file
+("explain `app/query/retriever.py`") can miss that file's chunks entirely. When a query mentions a
+file path, RepoMind fetches that file's chunks directly from Qdrant by metadata and prioritises
+them in the result set, guaranteeing the named file leads the answer regardless of how its content
+scores semantically.
+
 ### Language-Aware Semantic Chunking
-Source files are parsed using tree-sitter grammars for 13 programming languages. Chunks are
+Source files are parsed using tree-sitter grammars for 12 programming languages. Chunks are
 extracted at the function, method, and class level based on AST node types — not arbitrary
 fixed-size windows — preserving semantic boundaries and reducing context fragmentation.
+Oversized functions or classes (over 80 lines) are further split into overlapping sliding
+windows so a long body is never truncated mid-logic.
 
 ### Reranking with Graceful Degradation
 After RRF fusion, the top 20 candidates are passed to Cohere's reranking model
@@ -126,6 +134,25 @@ renders these as interactive cards and includes a collapsible sources panel.
 Conversation history is maintained per session in Redis (last 6 messages, 1-hour TTL). Each
 query carries prior context, enabling follow-up questions and iterative exploration without
 repeating context.
+
+### Incremental (Delta) Re-Indexing
+Re-indexing a previously indexed repo does not re-embed the whole codebase. The worker records the
+last indexed commit SHA and, on the next run, diffs it against HEAD (`git diff --name-only`) to
+find only the changed files. Stale chunks for those files are evicted from Qdrant and the BM25
+corpus, the changed files are re-chunked and re-embedded, and unchanged files are left untouched —
+so a routine update costs a handful of embeddings instead of thousands. If the old commit is
+unreachable (force-push, GC), it falls back safely to a full re-index.
+
+### Real-Time Indexing Progress
+The Celery worker publishes phase-by-phase progress events (cloning → diffing → chunking →
+embedding → upserting → done) to a per-repo Redis pub/sub channel. The frontend subscribes over a
+WebSocket (`/repos/{id}/progress`) and renders a live progress bar; a client that connects mid-run
+immediately receives the latest snapshot, since pub/sub itself keeps no backlog.
+
+### Automatic Re-Indexing via GitHub Webhook
+A `/webhooks/github` endpoint listens for push events. When a push lands on the repository's
+default branch, the matching indexed repo is automatically re-indexed (through the same delta
+path), keeping the index in sync with the source without manual intervention.
 
 ### Observability with Langfuse
 Every query pipeline execution is traced as a Langfuse span, capturing inputs, outputs, and
@@ -188,7 +215,7 @@ interactive HTML dashboard with per-question breakdowns and aggregate scores.
 | Streaming | Server-Sent Events (SSE) |
 | Fonts | Inter, JetBrains Mono (Google Fonts) |
 
-### Evaluation
+### Evaluation & Testing
 
 | Component | Technology |
 |---|---|
@@ -217,7 +244,8 @@ CodeBase-Q-A-with-RAG/
 |   |   +-- answerer.py          # Streaming answer generation with citations
 |   +-- workers/
 |   |   +-- celery_app.py        # Celery application configuration
-|   |   +-- tasks.py             # index_repo_task background job
+|   |   +-- tasks.py             # index_repo_task background job (full + delta indexing)
+|   |   +-- progress.py          # Redis pub/sub indexing-progress events
 |   +-- api/
 |   |   +-- eval.py              # Evaluation API routes
 |   +-- utils/
@@ -229,25 +257,32 @@ CodeBase-Q-A-with-RAG/
 |
 +-- migrations/                  # Alembic migration scripts
 +-- eval/
-|   +-- run_ragas.py             # RAGAS evaluation runner
-|   +-- results.json             # Latest evaluation output
+|   +-- run_ragas.py             # RAGAS evaluation runner (writes eval/results.json)
+|   +-- run_ablation.py          # Query-expansion ablation (single vs fusion)
+|   +-- ablation_results.json    # Latest ablation output
++-- tests/                       # pytest suite (fusion, hybrid search)
 +-- index.html                   # Single-page frontend application
 +-- eval.html                    # Evaluation dashboard
 +-- docker-compose.yml           # PostgreSQL, Redis, Qdrant service definitions
++-- start_services.ps1           # Launch API server + Celery worker (Windows)
 +-- pyproject.toml               # Project metadata and dependencies
 +-- .env                         # Environment variables (not committed)
 ```
 
 ---
 
-### API Reference
+## API Reference
 
 | Method | Endpoint | Description |
 |---|---|---|
+| GET | `/` | Serve the single-page frontend |
 | POST | `/repos` | Submit a GitHub URL for indexing |
 | GET | `/repos/{id}/status` | Poll indexing status |
-| POST | `/repos/{id}/reindex` | Reset and re-trigger indexing |
+| GET | `/repos/{id}/files` | List the distinct files indexed for a repo |
+| WS | `/repos/{id}/progress` | Stream real-time indexing progress (WebSocket) |
+| POST | `/repos/{id}/reindex` | Reset and re-trigger a full re-index |
 | POST | `/query` | Stream an answer (SSE) for a query against an indexed repo |
+| POST | `/webhooks/github` | Push webhook — auto re-index on default-branch push |
 | GET | `/eval` | Serve the evaluation dashboard |
 
 ---
